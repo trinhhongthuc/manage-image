@@ -3,6 +3,8 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
+const TAB_SESSION_KEY = "manage-image-tab-session";
+
 export default function Home() {
   const router = useRouter();
   const [password, setPassword] = useState("");
@@ -21,6 +23,7 @@ export default function Home() {
       });
       if (!response.ok)
         throw new Error((await response.json()).error ?? "Đăng nhập thất bại.");
+      sessionStorage.setItem(TAB_SESSION_KEY, "authenticated");
       router.push("/manage-image");
     } catch (error) {
       setMessage(

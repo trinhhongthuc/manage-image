@@ -35,15 +35,29 @@ async function github(path: string, init?: RequestInit) {
   return response;
 }
 
+type ShardCacheEntry = { data: { items: ImageRecord[]; sha?: string }; expiresAt: number };
+const shardCache = new Map<number, ShardCacheEntry>();
+
 async function readShard(index: number): Promise<{ items: ImageRecord[]; sha?: string }> {
+  const cached = shardCache.get(index);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
   const { owner, repo, branch } = config();
   const response = await github(`/repos/${owner}/${repo}/contents/${pathForShard(index)}?ref=${encodeURIComponent(branch)}`);
-  if (response.status === 404) return { items: [] };
+  if (response.status === 404) {
+    const empty = { items: [] };
+    shardCache.set(index, { data: empty, expiresAt: Date.now() + 60 * 1000 });
+    return empty;
+  }
   if (!response.ok) throw new Error(`GitHub đọc metadata thất bại (${response.status}).`);
   const payload = (await response.json()) as { content: string; sha: string };
   const content = Buffer.from(payload.content.replace(/\n/g, ""), "base64").toString("utf8");
   const items = JSON.parse(content) as unknown;
-  return { items: Array.isArray(items) ? (items as ImageRecord[]) : [], sha: payload.sha };
+  const result = { items: Array.isArray(items) ? (items as ImageRecord[]) : [], sha: payload.sha };
+  shardCache.set(index, { data: result, expiresAt: Date.now() + 60 * 1000 });
+  return result;
 }
 
 async function writeShard(index: number, items: ImageRecord[], sha?: string) {
@@ -60,6 +74,11 @@ async function writeShard(index: number, items: ImageRecord[], sha?: string) {
     body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`GitHub ghi metadata thất bại (${response.status}).`);
+  const payload = (await response.json()) as { content?: { sha?: string } };
+  shardCache.set(index, {
+    data: { items, sha: payload.content?.sha ?? sha },
+    expiresAt: Date.now() + 60 * 1000,
+  });
 }
 
 export async function appendRecords(records: ImageRecord[]) {
@@ -105,4 +124,23 @@ export async function removeRecord(id: string) {
     }
   }
   return false;
+}
+
+export async function updateRecord(id: string, updates: Partial<ImageRecord>) {
+  const shardIndex = shardFor(id);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await readShard(shardIndex);
+    const index = current.items.findIndex((record) => record.id === id);
+    if (index === -1) return null;
+    const updatedRecord: ImageRecord = { ...current.items[index], ...updates };
+    const next = [...current.items];
+    next[index] = updatedRecord;
+    try {
+      await writeShard(shardIndex, next, current.sha);
+      return updatedRecord;
+    } catch (error) {
+      if (attempt === 2) throw error;
+    }
+  }
+  return null;
 }

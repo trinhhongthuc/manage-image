@@ -2,6 +2,8 @@ import type { ImageRecord } from "@/lib/types";
 
 const apiBase = () => `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
+export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function requireConfig() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -9,9 +11,48 @@ function requireConfig() {
   return { chatId };
 }
 
-async function telegram<T>(method: string, init?: RequestInit): Promise<T> {
+type TelegramResponse<T> = {
+  ok: boolean;
+  result?: T;
+  description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number; migrate_to_chat_id?: number };
+};
+
+async function telegram<T>(method: string, init?: RequestInit, retryCount = 0): Promise<T> {
   const response = await fetch(`${apiBase()}/${method}`, { ...init, cache: "no-store" });
-  const payload = (await response.json()) as { ok: boolean; result?: T; description?: string };
+  const payload = (await response.json()) as TelegramResponse<T>;
+
+  // Handle group upgraded to supergroup with new chat_id
+  if (payload.parameters?.migrate_to_chat_id) {
+    const newChatId = String(payload.parameters.migrate_to_chat_id);
+    console.warn(`[Telegram Migration] Group nâng cấp sang supergroup chat ID mới: ${newChatId}`);
+    process.env.TELEGRAM_CHAT_ID = newChatId;
+    if (retryCount < 2 && init?.body) {
+      if (typeof init.body === "string") {
+        try {
+          const parsed = JSON.parse(init.body);
+          parsed.chat_id = newChatId;
+          init.body = JSON.stringify(parsed);
+        } catch {}
+      }
+      return telegram<T>(method, init, retryCount + 1);
+    }
+  }
+
+  // Handle Telegram 429 Too Many Requests with adaptive backoff
+  if (response.status === 429 || payload.error_code === 429) {
+    const retryAfter = payload.parameters?.retry_after ?? 1;
+    if (retryCount < 3) {
+      console.warn(
+        `[Telegram 429] Vượt ngưỡng rate limit. Tạm dừng ${retryAfter}s theo yêu cầu Telegram (thử lại ${retryCount + 1}/3)...`
+      );
+      await sleep(retryAfter * 1000 + 250);
+      return telegram<T>(method, init, retryCount + 1);
+    }
+    throw new Error(`Telegram giới hạn tần suất (429): Vui lòng thử lại sau ${retryAfter} giây.`);
+  }
+
   if (!response.ok || !payload.ok || payload.result === undefined) {
     throw new Error(payload.description ?? `Telegram ${method} thất bại.`);
   }
@@ -46,13 +87,22 @@ export async function deleteTelegramMessage(messageId: number) {
   });
 }
 
+const filePathCache = new Map<string, { url: string; expiresAt: number }>();
+
 export async function telegramFileUrl(fileId: string) {
+  const cached = filePathCache.get(fileId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.url;
+  }
   const file = await telegram<TelegramFile>("getFile", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_id: fileId }),
   });
-  return `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  const url = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  // Cache for 50 minutes (Telegram file_path is valid for at least 1 hour)
+  filePathCache.set(fileId, { url, expiresAt: Date.now() + 50 * 60 * 1000 });
+  return url;
 }
 
 export function recordFromTelegram(input: {

@@ -1,8 +1,9 @@
 import { isAdminAuthenticated } from "@/lib/auth";
-import { appendRecords, readAllRecords, removeRecord } from "@/lib/github";
-import { deleteTelegramMessage, recordFromTelegram, uploadToTelegram } from "@/lib/telegram";
+import { appendRecords, readAllRecords, removeRecord, updateRecord } from "@/lib/github";
+import { deleteTelegramMessage, recordFromTelegram, sleep, uploadToTelegram } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 function jsonError(message: string, status = 500) {
@@ -22,59 +23,202 @@ export async function GET(request: Request) {
   if (!(await isAdminAuthenticated())) return jsonError("Chưa đăng nhập.", 401);
   try {
     const url = new URL(request.url);
+    const isExport = url.searchParams.get("export") === "true";
+    let items = await readAllRecords();
+
+    // Export all records backup
+    if (isExport) {
+      return Response.json({
+        vault: "manage-image",
+        exportedAt: new Date().toISOString(),
+        total: items.length,
+        items,
+      });
+    }
+
     const page = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
-    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? "50")));
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? "50")));
     const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
     const type = (url.searchParams.get("type") ?? "").toLowerCase();
-    let items = await readAllRecords();
+    const tag = (url.searchParams.get("tag") ?? "").trim().toLowerCase();
+    const dateFrom = url.searchParams.get("from");
+    const dateTo = url.searchParams.get("to");
+
     if (query) items = items.filter((item) => item.filename.toLowerCase().includes(query));
     if (type) items = items.filter((item) => item.mimeType.toLowerCase().includes(type));
+    if (tag) items = items.filter((item) => (item.tags ?? []).some((t) => t.toLowerCase() === tag));
+    if (dateFrom) items = items.filter((item) => item.createdAt.slice(0, 10) >= dateFrom);
+    if (dateTo) items = items.filter((item) => item.createdAt.slice(0, 10) <= dateTo);
+
     items = sortRecords(items, url.searchParams.get("sort") ?? "newest");
     const start = (page - 1) * limit;
-    return Response.json({ items: items.slice(start, start + limit), page, limit, total: items.length, hasNextPage: start + limit < items.length });
+    return Response.json({
+      items: items.slice(start, start + limit),
+      page,
+      limit,
+      total: items.length,
+      hasNextPage: start + limit < items.length,
+    });
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Không thể tải metadata.");
   }
 }
 
+export async function PATCH(request: Request) {
+  if (!(await isAdminAuthenticated())) return jsonError("Chưa đăng nhập.", 401);
+  try {
+    const body = (await request.json()) as { id?: string; tags?: string[]; album?: string };
+    if (!body.id) return jsonError("Thiếu id ảnh.", 400);
+
+    const updated = await updateRecord(body.id, {
+      ...(Array.isArray(body.tags) ? { tags: body.tags } : {}),
+      ...(typeof body.album === "string" ? { album: body.album } : {}),
+    });
+
+    if (!updated) return jsonError("Không tìm thấy ảnh.", 404);
+    return Response.json({ ok: true, item: updated });
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Cập nhật metadata thất bại.");
+  }
+}
+
 export async function POST(request: Request) {
   if (!(await isAdminAuthenticated())) return jsonError("Chưa đăng nhập.", 401);
+
+  const contentType = request.headers.get("content-type") || "";
+
+  // 1. Upload via image URL
+  if (contentType.includes("application/json")) {
+    try {
+      const body = (await request.json()) as { url?: string; filename?: string };
+      if (!body.url || typeof body.url !== "string") {
+        return jsonError("Vui lòng cung cấp URL ảnh hợp lệ.", 400);
+      }
+
+      const fetchRes = await fetch(body.url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
+
+      if (!fetchRes.ok) {
+        return jsonError(`Không thể tải ảnh từ URL (${fetchRes.status}): ${fetchRes.statusText}`, 400);
+      }
+
+      const mimeType = fetchRes.headers.get("content-type") || "image/jpeg";
+      if (!mimeType.startsWith("image/")) {
+        return jsonError(`URL không phải là file ảnh hợp lệ (định dạng: ${mimeType}).`, 400);
+      }
+
+      const arrayBuf = await fetchRes.arrayBuffer();
+      if (arrayBuf.byteLength > MAX_FILE_SIZE) {
+        return jsonError("Kích thước ảnh vượt quá 50 MB.", 413);
+      }
+
+      let filename = body.filename?.trim();
+      if (!filename) {
+        try {
+          const parsedUrl = new URL(body.url);
+          filename = parsedUrl.pathname.split("/").pop()?.split("?")[0];
+        } catch {
+          filename = `url_image_${Date.now()}`;
+        }
+      }
+      if (!filename || !filename.includes(".")) {
+        const ext = mimeType.split("/")[1]?.replace("jpeg", "jpg").split(";")[0] || "jpg";
+        filename = `${filename || `url_image_${Date.now()}`}.${ext}`;
+      }
+
+      const file = new File([arrayBuf], filename, { type: mimeType });
+      const telegram = await uploadToTelegram(file);
+      const record = recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram });
+
+      await appendRecords([record]);
+      return Response.json({ items: [record], errors: [] });
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : "Upload từ URL thất bại.", 500);
+    }
+  }
+
+  // 2. Upload via multipart/form-data
   const form = await request.formData();
   const files = form.getAll("files").filter((value): value is File => value instanceof File);
   if (!files.length) return jsonError("Không có file.", 400);
   if (files.some((file) => !file.type.startsWith("image/"))) return jsonError("Chỉ chấp nhận file ảnh.", 400);
   if (files.some((file) => file.size > MAX_FILE_SIZE)) return jsonError("Mỗi ảnh tối đa 50 MB.", 413);
 
+  // Process files sequentially with 900ms delay to respect Telegram's 1 msg/sec per-chat rate limit
+  const DELAY_BETWEEN_FILES_MS = 900;
   const records = [];
   const errors: Array<{ filename: string; error: string }> = [];
-  for (const file of files) {
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (i > 0) {
+      await sleep(DELAY_BETWEEN_FILES_MS);
+    }
     try {
       const telegram = await uploadToTelegram(file);
       records.push(recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram }));
     } catch (error) {
-      errors.push({ filename: file.name, error: error instanceof Error ? error.message : "Upload thất bại." });
+      errors.push({
+        filename: file.name,
+        error: error instanceof Error ? error.message : "Upload thất bại.",
+      });
     }
   }
+
   if (records.length) {
     try {
       await appendRecords(records);
     } catch (error) {
-      return jsonError(`Telegram đã nhận ảnh nhưng GitHub chưa lưu metadata: ${error instanceof Error ? error.message : "lỗi không xác định"}`, 502);
+      return jsonError(
+        `Telegram đã nhận ảnh nhưng GitHub chưa lưu metadata: ${error instanceof Error ? error.message : "lỗi không xác định"}`,
+        502
+      );
     }
   }
+
   return Response.json({ items: records, errors }, { status: errors.length && !records.length ? 502 : 200 });
 }
 
 export async function DELETE(request: Request) {
   if (!(await isAdminAuthenticated())) return jsonError("Chưa đăng nhập.", 401);
   try {
-    const body = (await request.json()) as { id?: unknown };
-    if (typeof body.id !== "string") return jsonError("Thiếu id.", 400);
-    const record = (await readAllRecords()).find((item) => item.id === body.id);
-    if (!record) return jsonError("Không tìm thấy ảnh.", 404);
-    await deleteTelegramMessage(record.telegramMessageId);
-    await removeRecord(record.id);
-    return Response.json({ ok: true });
+    const body = (await request.json()) as { id?: unknown; ids?: unknown };
+    const ids: string[] = Array.isArray(body.ids)
+      ? body.ids.filter((item): item is string => typeof item === "string")
+      : typeof body.id === "string"
+      ? [body.id]
+      : [];
+
+    if (!ids.length) return jsonError("Thiếu id hoặc danh sách ids cần xóa.", 400);
+
+    const allRecords = await readAllRecords();
+    const recordsToDelete = allRecords.filter((item) => ids.includes(item.id));
+    if (!recordsToDelete.length) return jsonError("Không tìm thấy ảnh cần xóa.", 404);
+
+    const errors: Array<{ id: string; error: string }> = [];
+    for (const record of recordsToDelete) {
+      try {
+        await deleteTelegramMessage(record.telegramMessageId);
+      } catch (err) {
+        console.error(`Không thể xóa message Telegram #${record.telegramMessageId}:`, err);
+      }
+
+      try {
+        await removeRecord(record.id);
+      } catch (err) {
+        errors.push({ id: record.id, error: err instanceof Error ? err.message : "Lỗi xóa metadata" });
+      }
+    }
+
+    return Response.json({
+      ok: true,
+      deletedCount: recordsToDelete.length - errors.length,
+      errors: errors.length ? errors : undefined,
+    });
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Không thể xóa ảnh.");
   }

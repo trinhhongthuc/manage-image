@@ -9,6 +9,8 @@ export type ImageRecord = {
   size: number;
   mimeType: string;
   createdAt: string;
+  tags?: string[];
+  album?: string;
 };
 
 export type ImagePage = {
