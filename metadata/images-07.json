@@ -1,1 +1,22 @@
-[]
+[
+  {
+    "id": "img_d1e1d5a7-9069-4fa0-9bd3-979e0be1b637",
+    "filename": "3228_10219449486450965.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwADPGqr6Ao7gkscGmjO0KxZcQRBYnFhAAKQIwACA3ZZVSYuRraiRagdPQQ",
+    "telegramFileUniqueId": "AgADkCMAAgN2WVU",
+    "telegramMessageId": 60,
+    "size": 236414,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-09-17T13:15:55.590Z"
+  },
+  {
+    "id": "img_b66f4aab-2554-4a8f-bf8c-1586d28faf87",
+    "filename": "3213_10219652692810997.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwADPWqr6A0kDYL87edTXtObvkG1QWiIAAKRIwACA3ZZVT4ze93ES40oPQQ",
+    "telegramFileUniqueId": "AgADkSMAAgN2WVU",
+    "telegramMessageId": 61,
+    "size": 253014,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-09-17T13:15:58.634Z"
+  }
+]
