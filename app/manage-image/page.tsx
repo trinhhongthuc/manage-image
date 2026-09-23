@@ -1878,7 +1878,6 @@ export default function ManageImagePage() {
               </span>
             </div>
 
-            {/* Center Pro Tools: Zoom, Rotate, Slideshow, Fullscreen */}
             <div className="lightbox-center-controls">
               <button
                 type="button"
