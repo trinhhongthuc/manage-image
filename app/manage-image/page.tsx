@@ -1,7 +1,15 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  DragEvent,
+  FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { ImagePage, ImageRecord } from "@/lib/types";
+import { ManageHeader, UploadDropzone, UploadQueueBanner } from "./components";
 
 const TAB_SESSION_KEY = "manage-image-tab-session";
 
@@ -25,6 +33,10 @@ function formatSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function displayFolderName(folder: string) {
+  return folder.split("/").pop() ?? folder;
+}
+
 export default function ManageImagePage() {
   const [data, setData] = useState<ImagePage>(emptyPage);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
@@ -42,17 +54,24 @@ export default function ManageImagePage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [folders, setFolders] = useState<string[]>([]);
+  const [currentFolder, setCurrentFolder] = useState("");
 
   // Selected image for Lightbox
   const [selected, setSelected] = useState<ImageRecord | null>(null);
-  const [newTagInput, setNewTagInput] = useState("");
 
   // Grid row columns: 1, 2, 4, 8
   const [columns, setColumns] = useState<1 | 2 | 4 | 8>(4);
+  const [viewMode, setViewMode] = useState<"list" | "thumbnail" | "icon">(
+    "list",
+  );
+  const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
 
   // Selection mode & batch delete
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
   const [showConfirmDeleteSelected, setShowConfirmDeleteSelected] =
     useState(false);
   const [showConfirmDeleteAll, setShowConfirmDeleteAll] = useState(false);
@@ -62,15 +81,20 @@ export default function ManageImagePage() {
   const [limit, setLimit] = useState<number>(50);
 
   // Theme: dark / light
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">("dark");
 
   // Dashboard & backup modal
   const [showDashboard, setShowDashboard] = useState(false);
+  const [showFolderModal, setShowFolderModal] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [folderError, setFolderError] = useState("");
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
 
   // Lightbox pro tools
   const [zoom, setZoom] = useState<number>(1);
   const [rotation, setRotation] = useState<number>(0);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const loadRequestRef = useRef(0);
   const [isSlideshow, setIsSlideshow] = useState<boolean>(false);
   const [showFilmstrip, setShowFilmstrip] = useState<boolean>(true);
   const [showCopyMenu, setShowCopyMenu] = useState<boolean>(false);
@@ -83,6 +107,70 @@ export default function ManageImagePage() {
     setTimeout(() => setToastMessage(""), 2600);
   }
 
+  function openFolder(folder: string) {
+    setSelectedIds(new Set());
+    setSelectedFolders(new Set());
+    setIsSelectMode(false);
+    setData(emptyPage);
+    setCurrentFolder(folder);
+
+    const url = new URL(window.location.href);
+    if (folder) url.searchParams.set("folder", folder);
+    else url.searchParams.delete("folder");
+    window.history.pushState({}, "", url);
+  }
+
+  function toggleSelectFolder(folder: string) {
+    setSelectedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(folder)) next.delete(folder);
+      else next.add(folder);
+      return next;
+    });
+  }
+
+  async function createFolder(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = folderName.trim();
+    if (!name || isCreatingFolder) return;
+    if (name.includes("/")) {
+      setFolderError("Tên folder không được chứa ký tự '/'.");
+      return;
+    }
+
+    setIsCreatingFolder(true);
+    setFolderError("");
+    try {
+      const response = await fetch("/api/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, parent: currentFolder }),
+      });
+      const result = (await response.json()) as {
+        folder?: string;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(result.error ?? "Không thể tạo thư mục.");
+      }
+      const savedFolder = result.folder ?? name;
+      setFolders((current) =>
+        current.some((folder) => folder.toLowerCase() === savedFolder.toLowerCase())
+          ? current
+          : [...current, savedFolder].sort((a, b) => a.localeCompare(b)),
+      );
+      setFolderName("");
+      setShowFolderModal(false);
+      showToast(`✓ Đã tạo thư mục “${savedFolder}”`);
+    } catch (reason) {
+      setFolderError(
+        reason instanceof Error ? reason.message : "Không thể tạo thư mục.",
+      );
+    } finally {
+      setIsCreatingFolder(false);
+    }
+  }
+
   // Load theme from localStorage
   useEffect(() => {
     const savedTheme = localStorage.getItem("vault_theme") as
@@ -93,9 +181,27 @@ export default function ManageImagePage() {
   }, []);
 
   useEffect(() => {
-    if (window.matchMedia("(max-width: 760px)").matches) {
-      setColumns(1);
+    fetch("/api/folders", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const result = (await response.json()) as { folders?: unknown };
+        if (Array.isArray(result.folders)) {
+          setFolders(result.folders.filter((folder): folder is string => typeof folder === "string"));
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    function syncFolderFromUrl() {
+      setCurrentFolder(
+        new URLSearchParams(window.location.search).get("folder") ?? "",
+      );
     }
+
+    syncFolderFromUrl();
+    window.addEventListener("popstate", syncFolderFromUrl);
+    return () => window.removeEventListener("popstate", syncFolderFromUrl);
   }, []);
 
   function toggleTheme() {
@@ -158,8 +264,10 @@ export default function ManageImagePage() {
   }, []);
 
   async function load(page = 1, currentLimit = limit) {
+    setIsLoading(true);
     if (!sessionStorage.getItem(TAB_SESSION_KEY)) {
       window.location.href = "/";
+      setIsLoading(false);
       return;
     }
 
@@ -173,17 +281,24 @@ export default function ManageImagePage() {
     if (selectedTag) params.set("tag", selectedTag);
     if (dateFrom) params.set("from", dateFrom);
     if (dateTo) params.set("to", dateTo);
+    if (currentFolder) params.set("folder", currentFolder);
 
-    const response = await fetch(`/api/images?${params}`, {
-      cache: "no-store",
-    });
-    if (response.status === 401) {
-      window.location.href = "/";
-      return;
+    try {
+      const requestId = ++loadRequestRef.current;
+      const response = await fetch(`/api/images?${params}`, {
+        cache: "no-store",
+      });
+      if (response.status === 401) {
+        window.location.href = "/";
+        return;
+      }
+      if (!response.ok) throw new Error("Không thể tải gallery.");
+      const json = await response.json();
+      if (requestId !== loadRequestRef.current) return;
+      setData(json);
+    } finally {
+      setIsLoading(false);
     }
-    if (!response.ok) throw new Error("Không thể tải gallery.");
-    const json = await response.json();
-    setData(json);
   }
 
   useEffect(() => {
@@ -192,7 +307,7 @@ export default function ManageImagePage() {
         reason instanceof Error ? reason.message : "Không thể tải gallery.",
       ),
     );
-  }, [sort, type, selectedTag, dateFrom, dateTo, limit]);
+  }, [sort, type, selectedTag, dateFrom, dateTo, currentFolder, limit]);
 
   // Lock body scroll when modals are open
   useEffect(() => {
@@ -376,7 +491,10 @@ export default function ManageImagePage() {
       const res = await fetch("/api/images", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: cleanUrl }),
+        body: JSON.stringify({
+          url: cleanUrl,
+          ...(currentFolder ? { album: currentFolder } : {}),
+        }),
       });
       const result = await res.json();
       if (!res.ok) {
@@ -393,15 +511,15 @@ export default function ManageImagePage() {
     }
   }
 
-  async function uploadAll() {
+  async function uploadAll(isFastUpload = false) {
     const pending = uploads.filter((item) => item.status === "pending");
     if (!pending.length || isUploading) return;
     setIsUploading(true);
 
     // Gom 5 ảnh trong cùng 1 request HTTP (server sẽ xử lý giãn cách 900ms để chống rate limit của Telegram)
-    const BATCH_SIZE = 5;
+    const BATCH_SIZE = isFastUpload ? pending.length : 5;
     for (let i = 0; i < pending.length; i += BATCH_SIZE) {
-      if (i > 0) {
+      if (i > 0 && !isFastUpload) {
         // Nghỉ 1000ms giữa các batch request để Telegram hồi phục hạn mức burst
         await new Promise((r) => setTimeout(r, 1000));
       }
@@ -418,6 +536,8 @@ export default function ManageImagePage() {
       );
 
       const form = new FormData();
+      if (currentFolder) form.append("album", currentFolder);
+      if (isFastUpload) form.append("fast", "true");
       for (const item of batch) {
         // Giữ nguyên 100% chất lượng ảnh gốc, không nén
         form.append("files", item.file);
@@ -539,20 +659,46 @@ export default function ManageImagePage() {
 
   // Delete selected images
   async function handleDeleteSelected() {
-    if (!selectedIds.size || isDeleting) return;
+    if ((!selectedIds.size && !selectedFolders.size) || isDeleting) return;
     setIsDeleting(true);
     try {
-      const response = await fetch("/api/images", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: Array.from(selectedIds) }),
-      });
-      if (!response.ok) {
-        const res = await response.json();
-        throw new Error(res.error ?? "Xóa ảnh thất bại.");
+      if (selectedFolders.size) {
+        const folderResponse = await fetch("/api/folders", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folders: Array.from(selectedFolders) }),
+        });
+        if (!folderResponse.ok) {
+          const result = await folderResponse.json();
+          throw new Error(result.error ?? "Xóa folder thất bại.");
+        }
       }
-      showToast(`✓ Đã xóa ${selectedIds.size} ảnh!`);
+      if (selectedIds.size) {
+        const response = await fetch("/api/images", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: Array.from(selectedIds) }),
+        });
+        if (!response.ok) {
+          const res = await response.json();
+          throw new Error(res.error ?? "Xóa ảnh thất bại.");
+        }
+      }
+      const totalSelected = selectedIds.size + selectedFolders.size;
+      showToast(`✓ Đã xóa ${totalSelected} mục!`);
+      if (selectedFolders.size) {
+        setFolders((current) =>
+          current.filter(
+            (folder) =>
+              !Array.from(selectedFolders).some(
+                (target) =>
+                  folder === target || folder.startsWith(`${target}/`),
+              ),
+          ),
+        );
+      }
       setSelectedIds(new Set());
+      setSelectedFolders(new Set());
       setShowConfirmDeleteSelected(false);
       await load(data.page, limit);
     } catch (err) {
@@ -611,59 +757,6 @@ export default function ManageImagePage() {
     showToast(`Đang tải xuống ${itemsToDownload.length} ảnh...`);
   }
 
-  // Tag management: add / remove tag
-  async function handleAddTag(tag: string) {
-    if (!selected) return;
-    const cleanTag = tag.trim().replace(/^#/, "");
-    if (!cleanTag) return;
-    const currentTags = selected.tags ?? [];
-    if (currentTags.includes(cleanTag)) return;
-    const nextTags = [...currentTags, cleanTag];
-
-    try {
-      const res = await fetch("/api/images", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: selected.id, tags: nextTags }),
-      });
-      if (!res.ok) throw new Error("Không thể lưu tag.");
-      setSelected({ ...selected, tags: nextTags });
-      setData((prev) => ({
-        ...prev,
-        items: prev.items.map((it) =>
-          it.id === selected.id ? { ...it, tags: nextTags } : it,
-        ),
-      }));
-      setNewTagInput("");
-      showToast(`✓ Đã thêm tag #${cleanTag}`);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Lỗi lưu tag");
-    }
-  }
-
-  async function handleRemoveTag(tag: string) {
-    if (!selected) return;
-    const nextTags = (selected.tags ?? []).filter((t) => t !== tag);
-    try {
-      const res = await fetch("/api/images", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: selected.id, tags: nextTags }),
-      });
-      if (!res.ok) throw new Error("Không thể xóa tag.");
-      setSelected({ ...selected, tags: nextTags });
-      setData((prev) => ({
-        ...prev,
-        items: prev.items.map((it) =>
-          it.id === selected.id ? { ...it, tags: nextTags } : it,
-        ),
-      }));
-      showToast(`✓ Đã xóa tag #${tag}`);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Lỗi xóa tag");
-    }
-  }
-
   // 1-Click Metadata Export Backup
   async function handleExportBackup() {
     try {
@@ -720,132 +813,71 @@ export default function ManageImagePage() {
   const allUniqueTags = Array.from(
     new Set(data.items.flatMap((item) => item.tags ?? [])),
   );
+  const folderPrefix = currentFolder ? `${currentFolder}/` : "";
+  const visibleFolders = folders.filter((folder) => {
+    if (!folder.startsWith(folderPrefix)) return false;
+    return !folder.slice(folderPrefix.length).includes("/");
+  });
+  const allVisibleSelected =
+    data.items.length > 0 || visibleFolders.length > 0
+      ? selectedIds.size === data.items.length &&
+        visibleFolders.every((folder) => selectedFolders.has(folder))
+      : false;
   const totalVaultSize = data.items.reduce(
     (acc, cur) => acc + (cur.size || 0),
     0,
   );
 
   return (
-    <main className={`manage-page ${theme === "dark" ? "is-dark-theme" : ""}`}>
+    <main
+      className={`manage-page ${theme === "dark" ? "is-dark-theme" : ""} ${isSelectMode ? "is-select-mode" : ""}`}
+    >
       <div className="manage-container">
-        <header className="manage-toolbar">
-          <div>
-            <p className="login-kicker">PRIVATE IMAGE VAULT</p>
-            <h1>Thư viện hình ảnh</h1>
-          </div>
-          <div
-            style={{
-              display: "flex",
-              gap: "8px",
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
-            <button
-              className="cancel-upload-button"
-              type="button"
-              onClick={toggleTheme}
-              title={
-                theme === "dark"
-                  ? "Chuyển giao diện sáng"
-                  : "Chuyển giao diện tối"
-              }
-            >
-              {theme === "dark" ? "☀️ Sáng" : "🌙 Tối"}
-            </button>
-            <button
-              className="cancel-upload-button"
-              type="button"
-              onClick={() => setShowDashboard(true)}
-              title="Xem thống kê kho ảnh và sao lưu"
-            >
-              📊 Thống kê
-            </button>
-            <button
-              className="cancel-upload-button"
-              type="button"
-              onClick={() => setShowShortcuts(true)}
-              title="Phím tắt trợ giúp (?)"
-            >
-              ⌨ Phím tắt
-            </button>
-            {uploads.length > 0 && (
-              <button
-                className="save-upload-button"
-                type="button"
-                onClick={() => setIsUploadModalOpen(true)}
-              >
-                Hàng đợi ({uploads.length})
-              </button>
-            )}
-            <button
-              className="cancel-upload-button"
-              type="button"
-              onClick={() =>
-                fetch("/api/auth", { method: "DELETE" }).then(() => {
-                  sessionStorage.removeItem(TAB_SESSION_KEY);
-                  window.location.href = "/";
-                })
-              }
-            >
-              Đăng xuất
-            </button>
-          </div>
-        </header>
+        <ManageHeader
+          theme={theme}
+          hasUploads={uploads.length > 0}
+          uploadCount={uploads.length}
+          onToggleTheme={toggleTheme}
+          onShowDashboard={() => setShowDashboard(true)}
+          onShowShortcuts={() => setShowShortcuts(true)}
+          onShowUploads={() => setIsUploadModalOpen(true)}
+          onLogout={() =>
+            fetch("/api/auth", { method: "DELETE" }).then(() => {
+              sessionStorage.removeItem(TAB_SESSION_KEY);
+              window.location.href = "/";
+            })
+          }
+        />
 
         {/* Dropzone with Ctrl+V notice */}
-        <div
-          className={`upload-dropzone mobile-hidden ${dragging ? "is-dragging" : ""}`}
+        <UploadDropzone
+          dragging={dragging}
+          onChange={handleChange}
           onDragOver={(event) => {
             event.preventDefault();
             setDragging(true);
           }}
           onDragLeave={() => setDragging(false)}
           onDrop={handleDrop}
-        >
-          <input
-            id="files"
-            className="visually-hidden"
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={handleChange}
-          />
-          <p className="login-kicker">UPLOAD & CLIPBOARD</p>
-          <h2>Kéo ảnh vào đây hoặc bấm Ctrl + V</h2>
-          <p>
-            Hỗ trợ <label htmlFor="files">chọn nhiều file</label>, kéo thả, hoặc
-            dán trực tiếp ảnh chụp màn hình bằng <strong>Ctrl + V</strong>.
-          </p>
-        </div>
+        />
 
         {/* Queue Banner if modal is closed */}
         {uploads.length > 0 && !isUploadModalOpen && (
-          <div className="upload-queue-banner">
-            <div>
-              <strong>Hàng đợi: {uploads.length} ảnh</strong>
-              <span>
-                (Chờ: {pendingCount} · Thành công: {successCount}
-                {failedCount > 0 ? ` · Thất bại: ${failedCount}` : ""})
-              </span>
-            </div>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button
-                type="button"
-                className="save-upload-button"
-                onClick={() => setIsUploadModalOpen(true)}
-              >
-                Mở hàng đợi ({uploads.length})
-              </button>
-            </div>
-          </div>
+          <UploadQueueBanner
+            count={uploads.length}
+            pendingCount={pendingCount}
+            successCount={successCount}
+            failedCount={failedCount}
+            onOpen={() => setIsUploadModalOpen(true)}
+          />
         )}
 
         {/* Gallery Section */}
         <section className="gallery-section">
           {/* Filters, Grid Column Switcher & Select Mode Toggle */}
-          <div className="gallery-filters" style={{ alignItems: "center" }}>
+          <div className="gallery-filters" style={{ alignItems: "flex-end" }}>
             <input
+              className="mobile-search-filter"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
@@ -875,6 +907,7 @@ export default function ManageImagePage() {
 
             {/* Date Range Timeline Filter */}
             <input
+              className="mobile-date-filter"
               type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
@@ -882,6 +915,7 @@ export default function ManageImagePage() {
               style={{ maxWidth: "130px" }}
             />
             <input
+              className="mobile-date-filter"
               type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
@@ -912,12 +946,11 @@ export default function ManageImagePage() {
               Lọc
             </button>
 
-            {/* Grid Column Selector (1, 2, 4, 8) */}
+            {/* Grid Column Selector */}
             <div
-              className="manage-control-group"
+              className="manage-control-group mobile-grid-control"
               style={{ marginLeft: "auto" }}
             >
-              <span>Lưới:</span>
               <div className="segmented-control">
                 <button
                   type="button"
@@ -937,7 +970,7 @@ export default function ManageImagePage() {
                 </button>
                 <button
                   type="button"
-                  className={columns === 4 ? "is-active" : ""}
+                  className={`grid-option-wide ${columns === 4 ? "is-active" : ""}`}
                   onClick={() => setColumns(4)}
                   title="4 ảnh trên 1 hàng"
                 >
@@ -945,13 +978,54 @@ export default function ManageImagePage() {
                 </button>
                 <button
                   type="button"
-                  className={columns === 8 ? "is-active" : ""}
+                  className={`grid-option-wide ${columns === 8 ? "is-active" : ""}`}
                   onClick={() => setColumns(8)}
                   title="8 ảnh trên 1 hàng"
                 >
                   8
                 </button>
               </div>
+            </div>
+
+            <div className="view-menu-wrap">
+              <button
+                type="button"
+                className={`view-menu-button ${isViewMenuOpen ? "is-active" : ""}`}
+                aria-label="Chọn kiểu hiển thị"
+                aria-expanded={isViewMenuOpen}
+                onClick={() => setIsViewMenuOpen((open) => !open)}
+              >
+                <span className="view-list-icon" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </button>
+              {isViewMenuOpen && (
+                <div className="view-menu" role="menu">
+                  {[
+                    ["list", "List view"],
+                    ["thumbnail", "Thumbnail view"],
+                    ["icon", "Icon view"],
+                  ].map(([mode, label]) => (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={viewMode === mode ? "is-selected" : ""}
+                      key={mode}
+                      onClick={() => {
+                        setViewMode(mode as "list" | "thumbnail" | "icon");
+                        setIsViewMenuOpen(false);
+                      }}
+                    >
+                      <span className="view-menu-check">
+                        {viewMode === mode ? "✓" : ""}
+                      </span>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Select mode toggle */}
@@ -977,6 +1051,16 @@ export default function ManageImagePage() {
               }}
             >
               {isSelectMode ? "✕ Hủy chọn" : "✓ Chọn ảnh"}
+            </button>
+            <button
+              type="button"
+              className="add-folder-button mobile-add-folder"
+              onClick={() => {
+                setFolderError("");
+                setShowFolderModal(true);
+              }}
+            >
+              <span aria-hidden="true">＋</span> Add Folder
             </button>
           </div>
 
@@ -1026,24 +1110,23 @@ export default function ManageImagePage() {
           {isSelectMode && (
             <div className="selection-bar">
               <span className="selection-info">
-                Đã chọn: {selectedIds.size} / {data.items.length} ảnh trên trang
-                này
+                Đã chọn: {selectedIds.size} ảnh, {selectedFolders.size} folder
               </span>
               <div className="selection-actions">
                 <button
                   type="button"
                   className="selection-btn"
                   onClick={() => {
-                    if (selectedIds.size === data.items.length) {
+                    if (allVisibleSelected) {
                       setSelectedIds(new Set());
+                      setSelectedFolders(new Set());
                     } else {
                       setSelectedIds(new Set(data.items.map((img) => img.id)));
+                      setSelectedFolders(new Set(visibleFolders));
                     }
                   }}
                 >
-                  {selectedIds.size === data.items.length
-                    ? "Bỏ chọn tất cả"
-                    : "Chọn tất cả trang này"}
+                  {allVisibleSelected ? "Bỏ chọn tất cả" : "Chọn tất cả"}
                 </button>
                 <button
                   type="button"
@@ -1057,10 +1140,10 @@ export default function ManageImagePage() {
                 <button
                   type="button"
                   className="selection-btn btn-danger"
-                  disabled={selectedIds.size === 0 || isDeleting}
+                  disabled={selectedIds.size === 0 && selectedFolders.size === 0 || isDeleting}
                   onClick={() => setShowConfirmDeleteSelected(true)}
                 >
-                  Xóa ảnh đã chọn ({selectedIds.size})
+                  Xóa mục đã chọn ({selectedIds.size + selectedFolders.size})
                 </button>
                 <button
                   type="button"
@@ -1077,8 +1160,27 @@ export default function ManageImagePage() {
           <div className="section-heading">
             <div>
               <p className="login-kicker">GALLERY</p>
+              <nav
+                className="folder-breadcrumb desktop-folder-breadcrumb"
+                aria-label="Folder navigation"
+              >
+                <button type="button" onClick={() => openFolder("")}>
+                  All
+                </button>
+                {currentFolder.split("/").map((segment, index, parts) => {
+                  const path = parts.slice(0, index + 1).join("/");
+                  return (
+                    <span className="folder-breadcrumb-segment" key={path}>
+                      <span aria-hidden="true">›</span>
+                      <button type="button" onClick={() => openFolder(path)}>
+                        {segment}
+                      </button>
+                    </span>
+                  );
+                })}
+              </nav>
               <h2>
-                {data.total.toLocaleString()} ảnh
+                Ảnh: {data.total.toLocaleString()}
                 {selectedTag && (
                   <span
                     style={{
@@ -1108,9 +1210,6 @@ export default function ManageImagePage() {
 
             {/* Items per page selector */}
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ fontSize: "12px", color: "#637078" }}>
-                Hiển thị:
-              </span>
               <select
                 value={limit}
                 onChange={(e) => {
@@ -1139,13 +1238,38 @@ export default function ManageImagePage() {
             </div>
           </div>
 
+          <nav
+            className="folder-breadcrumb mobile-folder-breadcrumb"
+            aria-label="Folder navigation"
+          >
+            <button type="button" onClick={() => openFolder("")}>All</button>
+            {currentFolder.split("/").map((segment, index, parts) => {
+              const path = parts.slice(0, index + 1).join("/");
+              return (
+                <span className="folder-breadcrumb-segment" key={path}>
+                  <span aria-hidden="true">›</span>
+                  <button type="button" onClick={() => openFolder(path)}>
+                    {segment}
+                  </button>
+                </span>
+              );
+            })}
+          </nav>
+
           {error && (
             <p className="upload-error" role="alert">
               {error}
             </p>
           )}
 
-          {data.items.length === 0 ? (
+          {isLoading && (
+            <div className="gallery-loading" role="status" aria-live="polite">
+              <span className="gallery-loading-spinner" aria-hidden="true" />
+              Đang tải ảnh...
+            </div>
+          )}
+
+          {!isLoading && data.items.length === 0 && visibleFolders.length === 0 ? (
             <div
               style={{
                 textAlign: "center",
@@ -1156,9 +1280,51 @@ export default function ManageImagePage() {
               Chưa có ảnh nào phù hợp. Hãy thử thay đổi bộ lọc hoặc dán ảnh mới
               bằng <strong>Ctrl + V</strong>.
             </div>
-          ) : (
+          ) : !isLoading ? (
             /* Full edge-to-edge cover grid */
-            <div className={`image-grid grid-${columns}`}>
+            <div className={`image-grid grid-${columns} view-${viewMode}`}>
+              {(viewMode === "thumbnail" || viewMode === "icon") &&
+                visibleFolders.map((folder) => (
+                  <button
+                    type="button"
+                    className={`thumbnail-folder-card desktop-folder-view ${selectedFolders.has(folder) ? "is-selected" : ""}`}
+                    key={`thumbnail-folder-${folder}`}
+                    onClick={() => isSelectMode ? toggleSelectFolder(folder) : openFolder(folder)}
+                    title={`Mở folder ${folder}`}
+                  >
+                    {isSelectMode && (
+                      <span className="folder-selected-mark">
+                        {selectedFolders.has(folder) ? "✓" : ""}
+                      </span>
+                    )}
+                    <span className="thumbnail-folder-icon" aria-hidden="true" />
+                    <span className="thumbnail-item-name">{displayFolderName(folder)}</span>
+                    <span className="thumbnail-item-meta">09-23 09:17</span>
+                  </button>
+                ))}
+              <div
+                className={`folder-list-container ${viewMode === "list" ? "is-active" : ""}`}
+              >
+              {visibleFolders.map((folder) => (
+                  <button
+                    type="button"
+                    className={`list-folder-row ${selectedFolders.has(folder) ? "is-selected" : ""}`}
+                    key={`folder-${folder}`}
+                    onClick={() => isSelectMode ? toggleSelectFolder(folder) : openFolder(folder)}
+                    title={`Mở folder ${folder}`}
+                  >
+                    {isSelectMode && (
+                      <span className="folder-selected-mark">
+                        {selectedFolders.has(folder) ? "✓" : ""}
+                      </span>
+                    )}
+                    <span className="list-folder-icon" aria-hidden="true" />
+                    <span className="list-file-name">{displayFolderName(folder)}</span>
+                    <span>--</span>
+                    <span>-</span>
+                  </button>
+              ))}
+              </div>
               {data.items.map((image) => {
                 const isItemChecked = selectedIds.has(image.id);
                 return (
@@ -1201,14 +1367,44 @@ export default function ManageImagePage() {
                         decoding="async"
                       />
                     </div>
+                    {viewMode === "list" && (
+                      <>
+                        <span className="list-file-name">{image.filename}</span>
+                        <span className="list-file-date">
+                          {new Date(image.createdAt).toLocaleTimeString("vi-VN", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                        <span className="list-file-size">
+                          {formatSize(image.size)}
+                        </span>
+                      </>
+                    )}
+                    {(viewMode === "thumbnail" || viewMode === "icon") && (
+                      <span className="thumbnail-caption">
+                        <span className="thumbnail-item-name">{image.filename}</span>
+                        <span className="thumbnail-item-meta">
+                          {new Date(image.createdAt).toLocaleDateString("vi-VN", {
+                            month: "2-digit",
+                            day: "2-digit",
+                          })}{" "}
+                          {new Date(image.createdAt).toLocaleTimeString("vi-VN", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                        <span className="thumbnail-item-size">{formatSize(image.size)}</span>
+                      </span>
+                    )}
                   </button>
                 );
               })}
             </div>
-          )}
+          ) : null}
 
           {/* Pagination Controls */}
-          {data.total > 0 && (
+          {!isLoading && data.total > 0 && (
             <div className="pagination-container">
               <div style={{ fontSize: "12px", color: "#637078" }}>
                 Hiển thị {(data.page - 1) * (data.limit || limit) + 1} -{" "}
@@ -1307,12 +1503,13 @@ export default function ManageImagePage() {
           onClick={() => !isDeleting && setShowConfirmDeleteSelected(false)}
         >
           <div className="confirm-panel" onClick={(e) => e.stopPropagation()}>
-            <p className="login-kicker">XÁC NHẬN XÓA ẢNH ĐÃ CHỌN</p>
-            <h2>Xóa {selectedIds.size} ảnh đã chọn?</h2>
+            <p className="login-kicker">XÁC NHẬN XÓA MỤC ĐÃ CHỌN</p>
+            <h2>
+              Xóa {selectedIds.size + selectedFolders.size} mục đã chọn?
+            </h2>
             <p style={{ marginTop: "12px" }}>
-              Các ảnh đã chọn sẽ bị xóa vĩnh viễn khỏi tin nhắn Telegram và file
-              metadata trên GitHub. Bạn sẽ không thể khôi phục lại những ảnh
-              này.
+              Folder đã chọn sẽ xóa cả folder con và ảnh bên trong khỏi thư viện.
+              Thao tác này không thể khôi phục.
             </p>
             <div
               style={{
@@ -1338,7 +1535,7 @@ export default function ManageImagePage() {
               >
                 {isDeleting
                   ? "Đang xóa..."
-                  : `Xác nhận xóa (${selectedIds.size} ảnh)`}
+                  : `Xác nhận xóa (${selectedIds.size + selectedFolders.size} mục)`}
               </button>
             </div>
           </div>
@@ -1615,16 +1812,27 @@ export default function ManageImagePage() {
                   Đóng
                 </button>
                 {pendingCount > 0 ? (
-                  <button
-                    type="button"
-                    className="save-upload-button"
-                    onClick={uploadAll}
-                    disabled={isUploading}
-                  >
-                    {isUploading
-                      ? "Đang tải lên..."
-                      : `Bắt đầu tải lên (${pendingCount})`}
-                  </button>
+                  <div className="upload-start-actions">
+                    <button
+                      type="button"
+                      className="save-upload-button"
+                      onClick={() => uploadAll(false)}
+                      disabled={isUploading}
+                    >
+                      {isUploading
+                        ? "Đang tải lên..."
+                        : `Bắt đầu tải lên (${pendingCount})`}
+                    </button>
+                    <button
+                      type="button"
+                      className="fast-upload-button"
+                      onClick={() => uploadAll(true)}
+                      disabled={isUploading}
+                      title="Gửi nhanh, không chờ 900ms giữa các ảnh. Telegram có thể trả lỗi 409."
+                    >
+                      Tải nhanh
+                    </button>
+                  </div>
                 ) : (
                   <button
                     type="button"
@@ -1671,10 +1879,10 @@ export default function ManageImagePage() {
             </div>
 
             {/* Center Pro Tools: Zoom, Rotate, Slideshow, Fullscreen */}
-            <div className="lightbox-center-controls mobile-hidden">
+            <div className="lightbox-center-controls">
               <button
                 type="button"
-                className={`lightbox-icon-btn ${isSlideshow ? "is-active" : ""}`}
+                className={`mobile-hidden lightbox-icon-btn ${isSlideshow ? "is-active" : ""}`}
                 onClick={() => setIsSlideshow(!isSlideshow)}
                 title={
                   isSlideshow
@@ -1707,7 +1915,7 @@ export default function ManageImagePage() {
               {zoom > 1 && (
                 <button
                   type="button"
-                  className="lightbox-icon-btn"
+                  className="lightbox-icon-btn mobile-hidden"
                   onClick={() => setZoom(1)}
                   title="Đặt lại kích thước chuẩn (100%)"
                   style={{
@@ -1722,7 +1930,7 @@ export default function ManageImagePage() {
               )}
               <button
                 type="button"
-                className="lightbox-icon-btn"
+                className="lightbox-icon-btn mobile-hidden"
                 onClick={() => setRotation((r) => (r + 90) % 360)}
                 title="Xoay ảnh 90° (Phím R)"
               >
@@ -1956,66 +2164,6 @@ export default function ManageImagePage() {
             </div>
           )}
 
-          {/* Bottom Bar with Metadata & Tags */}
-          <div
-            className="lightbox-bottom-bar"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              style={{ display: "flex", flexDirection: "column", gap: "4px" }}
-            >
-              <span>
-                {selected.width
-                  ? `${selected.width} × ${selected.height} px · `
-                  : ""}
-                {formatSize(selected.size)} · {selected.mimeType} · Telegram #
-                {selected.telegramMessageId}
-              </span>
-              {/* Tags Input & Chips */}
-              <div className="lightbox-tag-input">
-                <span
-                  style={{ fontSize: "11px", color: "rgba(255,255,255,0.7)" }}
-                >
-                  Tags:
-                </span>
-                {(selected.tags ?? []).map((tag) => (
-                  <span
-                    key={tag}
-                    className="tag-pill"
-                    style={{
-                      background: "rgba(255,255,255,0.15)",
-                      color: "#fff",
-                    }}
-                  >
-                    #{tag}
-                    <span
-                      onClick={() => handleRemoveTag(tag)}
-                      style={{
-                        cursor: "pointer",
-                        marginLeft: "2px",
-                        fontWeight: "bold",
-                      }}
-                      title="Xóa tag này"
-                    >
-                      ×
-                    </span>
-                  </span>
-                ))}
-                <input
-                  value={newTagInput}
-                  onChange={(e) => setNewTagInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleAddTag(newTagInput);
-                  }}
-                  placeholder="+ Thêm tag (Enter)"
-                />
-              </div>
-            </div>
-
-            <span>
-              Tải lên: {new Date(selected.createdAt).toLocaleString("vi-VN")}
-            </span>
-          </div>
         </div>
       )}
 
@@ -2236,6 +2384,66 @@ export default function ManageImagePage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {showFolderModal && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-folder-title"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !isCreatingFolder) {
+              setShowFolderModal(false);
+            }
+          }}
+        >
+          <form className="confirm-panel folder-form" onSubmit={createFolder}>
+            <button
+              type="button"
+              className="upload-modal-close folder-close"
+              onClick={() => setShowFolderModal(false)}
+              disabled={isCreatingFolder}
+              aria-label="Đóng"
+            >
+              ×
+            </button>
+            <p className="login-kicker">NEW FOLDER</p>
+            <h2 id="create-folder-title">Tạo thư mục mới</h2>
+            <p>Đặt tên cho thư mục để quản lý ảnh dễ dàng hơn.</p>
+            <input
+              className="folder-name-input"
+              value={folderName}
+              onChange={(event) => setFolderName(event.target.value)}
+              placeholder="Ví dụ: Du lịch Đà Nẵng"
+              maxLength={80}
+              autoFocus
+              disabled={isCreatingFolder}
+            />
+            {folderError && (
+              <p className="folder-form-error" role="alert">
+                {folderError}
+              </p>
+            )}
+            <div className="folder-form-actions">
+              <button
+                type="button"
+                className="cancel-upload-button"
+                onClick={() => setShowFolderModal(false)}
+                disabled={isCreatingFolder}
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                className="save-upload-button"
+                disabled={!folderName.trim() || isCreatingFolder}
+              >
+                {isCreatingFolder ? "Đang tạo..." : "Tạo thư mục"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

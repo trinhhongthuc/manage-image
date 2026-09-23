@@ -41,12 +41,18 @@ export async function GET(request: Request) {
     const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
     const type = (url.searchParams.get("type") ?? "").toLowerCase();
     const tag = (url.searchParams.get("tag") ?? "").trim().toLowerCase();
+    const album = (url.searchParams.get("folder") ?? "").trim();
     const dateFrom = url.searchParams.get("from");
     const dateTo = url.searchParams.get("to");
 
     if (query) items = items.filter((item) => item.filename.toLowerCase().includes(query));
     if (type) items = items.filter((item) => item.mimeType.toLowerCase().includes(type));
     if (tag) items = items.filter((item) => (item.tags ?? []).some((t) => t.toLowerCase() === tag));
+    if (album) {
+      items = items.filter((item) => item.album === album);
+    } else {
+      items = items.filter((item) => !item.album?.trim());
+    }
     if (dateFrom) items = items.filter((item) => item.createdAt.slice(0, 10) >= dateFrom);
     if (dateTo) items = items.filter((item) => item.createdAt.slice(0, 10) <= dateTo);
 
@@ -90,7 +96,7 @@ export async function POST(request: Request) {
   // 1. Upload via image URL
   if (contentType.includes("application/json")) {
     try {
-      const body = (await request.json()) as { url?: string; filename?: string };
+      const body = (await request.json()) as { url?: string; filename?: string; album?: string };
       if (!body.url || typeof body.url !== "string") {
         return jsonError("Vui lòng cung cấp URL ảnh hợp lệ.", 400);
       }
@@ -132,7 +138,10 @@ export async function POST(request: Request) {
 
       const file = new File([arrayBuf], filename, { type: mimeType });
       const telegram = await uploadToTelegram(file);
-      const record = recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram });
+      const record = {
+        ...recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram }),
+        ...(typeof body.album === "string" && body.album.trim() ? { album: body.album.trim() } : {}),
+      };
 
       await appendRecords([record]);
       return Response.json({ items: [record], errors: [] });
@@ -143,24 +152,29 @@ export async function POST(request: Request) {
 
   // 2. Upload via multipart/form-data
   const form = await request.formData();
+  const album = String(form.get("album") ?? "").trim();
+  const isFastUpload = form.get("fast") === "true";
   const files = form.getAll("files").filter((value): value is File => value instanceof File);
   if (!files.length) return jsonError("Không có file.", 400);
   if (files.some((file) => !file.type.startsWith("image/"))) return jsonError("Chỉ chấp nhận file ảnh.", 400);
   if (files.some((file) => file.size > MAX_FILE_SIZE)) return jsonError("Mỗi ảnh tối đa 50 MB.", 413);
 
   // Process files sequentially with 900ms delay to respect Telegram's 1 msg/sec per-chat rate limit
-  const DELAY_BETWEEN_FILES_MS = 900;
+  const DELAY_BETWEEN_FILES_MS = isFastUpload ? 0 : 900;
   const records = [];
   const errors: Array<{ filename: string; error: string }> = [];
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    if (i > 0) {
+    if (i > 0 && DELAY_BETWEEN_FILES_MS > 0) {
       await sleep(DELAY_BETWEEN_FILES_MS);
     }
     try {
       const telegram = await uploadToTelegram(file);
-      records.push(recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram }));
+      records.push({
+        ...recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram }),
+        ...(album ? { album } : {}),
+      });
     } catch (error) {
       errors.push({
         filename: file.name,
