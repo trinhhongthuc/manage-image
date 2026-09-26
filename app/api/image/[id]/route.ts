@@ -30,6 +30,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       "Content-Type": record.mimeType,
       "Content-Length": String(record.size),
       "Cache-Control": "private, max-age=31536000, immutable",
+      "Accept-Ranges": "bytes",
       ETag: etag,
     },
   });

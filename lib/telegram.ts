@@ -35,6 +35,8 @@ async function telegram<T>(method: string, init?: RequestInit, retryCount = 0): 
           parsed.chat_id = newChatId;
           init.body = JSON.stringify(parsed);
         } catch {}
+      } else if (typeof FormData !== "undefined" && init.body instanceof FormData) {
+        init.body.set("chat_id", newChatId);
       }
       return telegram<T>(method, init, retryCount + 1);
     }
@@ -59,10 +61,22 @@ async function telegram<T>(method: string, init?: RequestInit, retryCount = 0): 
   return payload.result;
 }
 
+type TelegramMedia = {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  mime_type?: string;
+  width?: number;
+  height?: number;
+};
+
 type TelegramMessage = {
   message_id: number;
-  document?: { file_id: string; file_unique_id: string; file_size?: number; mime_type?: string };
-  photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>;
+  document?: TelegramMedia;
+  video?: TelegramMedia;
+  animation?: TelegramMedia;
+  audio?: TelegramMedia;
+  photo?: TelegramMedia[];
 };
 
 type TelegramFile = { file_path: string };
@@ -73,9 +87,19 @@ export async function uploadToTelegram(file: File) {
   form.set("chat_id", chatId);
   form.set("document", file, file.name);
   const message = await telegram<TelegramMessage>("sendDocument", { method: "POST", body: form });
-  const document = message.document;
-  if (!document) throw new Error("Telegram không trả về document metadata.");
-  return { message, document };
+  const media =
+    message.document ??
+    message.video ??
+    message.animation ??
+    message.audio ??
+    (Array.isArray(message.photo) && message.photo.length > 0
+      ? message.photo[message.photo.length - 1]
+      : undefined);
+  if (!media) {
+    console.error("[Telegram Upload Missing Media]:", JSON.stringify(message));
+    throw new Error("Telegram không trả về document/video metadata.");
+  }
+  return { message, document: media };
 }
 
 export async function deleteTelegramMessage(messageId: number) {
@@ -105,20 +129,59 @@ export async function telegramFileUrl(fileId: string) {
   return url;
 }
 
+function guessMimeType(filename: string, fallback?: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "mp4":
+      return "video/mp4";
+    case "webm":
+      return "video/webm";
+    case "mov":
+      return "video/quicktime";
+    case "mkv":
+      return "video/x-matroska";
+    case "avi":
+      return "video/x-msvideo";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "svg":
+      return "image/svg+xml";
+    default:
+      return fallback && fallback !== "application/octet-stream"
+        ? fallback
+        : "application/octet-stream";
+  }
+}
+
 export function recordFromTelegram(input: {
   id: string;
   file: File;
   message: TelegramMessage;
-  document: { file_id: string; file_unique_id: string; file_size?: number; mime_type?: string };
+  document: TelegramMedia;
 }): ImageRecord {
+  const rawMime = input.document.mime_type || input.file.type;
+  const resolvedMime =
+    rawMime && rawMime !== "application/octet-stream"
+      ? rawMime
+      : guessMimeType(input.file.name, rawMime);
+
   return {
     id: input.id,
     filename: input.file.name,
     telegramFileId: input.document.file_id,
     telegramFileUniqueId: input.document.file_unique_id,
     telegramMessageId: input.message.message_id,
+    width: input.document.width,
+    height: input.document.height,
     size: input.document.file_size ?? input.file.size,
-    mimeType: input.document.mime_type ?? input.file.type,
+    mimeType: resolvedMime,
     createdAt: new Date().toISOString(),
   };
 }

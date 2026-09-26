@@ -95,6 +95,7 @@ export default function ManageImagePage() {
   const [rotation, setRotation] = useState<number>(0);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
   const loadRequestRef = useRef(0);
+  const filmstripContainerRef = useRef<HTMLDivElement | null>(null);
   const [isSlideshow, setIsSlideshow] = useState<boolean>(false);
   const [showFilmstrip, setShowFilmstrip] = useState<boolean>(true);
   const [showCopyMenu, setShowCopyMenu] = useState<boolean>(false);
@@ -238,11 +239,15 @@ export default function ManageImagePage() {
       const files: File[] = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        if (item.kind === "file" && item.type.startsWith("image/")) {
+        if (
+          item.kind === "file" &&
+          (item.type.startsWith("image/") || item.type.startsWith("video/"))
+        ) {
           const blob = item.getAsFile();
           if (blob) {
             const ext =
-              item.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+              item.type.split("/")[1]?.replace("jpeg", "jpg") ||
+              (item.type.startsWith("video/") ? "mp4" : "png");
             const timeStr = new Date()
               .toISOString()
               .replace(/[:.]/g, "-")
@@ -256,7 +261,7 @@ export default function ManageImagePage() {
       }
       if (files.length > 0) {
         addFiles(files);
-        showToast(`✓ Đã nhận ${files.length} ảnh từ Clipboard!`);
+        showToast(`✓ Đã nhận ${files.length} file từ Clipboard!`);
       }
     }
     window.addEventListener("paste", handlePaste);
@@ -366,6 +371,23 @@ export default function ManageImagePage() {
     return () => clearInterval(timer);
   }, [isSlideshow, selected, selectedIndex, data.items]);
 
+  // Scroll active filmstrip item to center when selected changes
+  useEffect(() => {
+    if (!selected || !showFilmstrip) return;
+    const container = filmstripContainerRef.current;
+    if (!container) return;
+    const activeEl = container.querySelector(
+      ".filmstrip-item.is-active",
+    ) as HTMLElement | null;
+    if (activeEl) {
+      activeEl.scrollIntoView({
+        behavior: "smooth",
+        inline: "center",
+        block: "nearest",
+      });
+    }
+  }, [selected?.id, showFilmstrip]);
+
   // Keyboard navigation & shortcuts
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -413,7 +435,9 @@ export default function ManageImagePage() {
   }, [selected, selectedIndex, data.items, showShortcuts, showDashboard]);
 
   function addFiles(files: File[]) {
-    const valid = files.filter((file) => file.type.startsWith("image/"));
+    const valid = files.filter(
+      (file) => file.type.startsWith("image/") || file.type.startsWith("video/"),
+    );
     if (!valid.length) return;
     const newItems: UploadItem[] = valid.map((file) => ({
       id: crypto.randomUUID(),
@@ -528,7 +552,7 @@ export default function ManageImagePage() {
       const batchIds = new Set(batch.map((b) => b.id));
 
       setUploads((current) =>
-        current.map((item) =>
+        current.map((item): UploadItem =>
           batchIds.has(item.id)
             ? { ...item, status: "uploading", error: undefined }
             : item,
@@ -554,7 +578,7 @@ export default function ManageImagePage() {
           const serverErr =
             result.error ?? `Upload thất bại (${response.status})`;
           setUploads((current) =>
-            current.map((item) =>
+            current.map((item): UploadItem =>
               batchIds.has(item.id)
                 ? { ...item, status: "failed", error: serverErr }
                 : item,
@@ -571,13 +595,13 @@ export default function ManageImagePage() {
           );
 
           setUploads((current: UploadItem[]) =>
-            current.map((item) => {
+            current.map((item): UploadItem => {
               if (!batchIds.has(item.id)) return item;
               if (failedMap.has(item.file.name)) {
                 return {
                   ...item,
                   status: "failed",
-                  error: failedMap.get(item.file.name) as string, // Ép kiểu thành string
+                  error: String(failedMap.get(item.file.name) || "Lỗi upload"),
                 };
               }
               return { ...item, status: "success", error: undefined };
@@ -588,7 +612,7 @@ export default function ManageImagePage() {
         const networkErr =
           reason instanceof Error ? reason.message : "Lỗi kết nối mạng";
         setUploads((current) =>
-          current.map((item) =>
+          current.map((item): UploadItem =>
             batchIds.has(item.id)
               ? { ...item, status: "failed", error: networkErr }
               : item,
@@ -890,10 +914,14 @@ export default function ManageImagePage() {
               onChange={(event) => setType(event.target.value)}
             >
               <option value="">Mọi định dạng</option>
+              <option value="image">Tất cả hình ảnh</option>
+              <option value="video">Tất cả video</option>
               <option value="jpeg">JPG / JPEG</option>
               <option value="png">PNG</option>
               <option value="webp">WEBP</option>
               <option value="gif">GIF</option>
+              <option value="mp4">MP4 Video</option>
+              <option value="webm">WebM Video</option>
             </select>
             <select
               value={sort}
@@ -1360,12 +1388,24 @@ export default function ManageImagePage() {
                       </div>
                     )}
                     <div className="image-preview">
-                      <img
-                        src={`/api/image/${image.id}`}
-                        alt={image.filename}
-                        loading="lazy"
-                        decoding="async"
-                      />
+                      {image.mimeType?.startsWith("video/") ? (
+                        <div className="video-card-thumb">
+                          <video
+                            src={`/api/image/${image.id}`}
+                            preload="metadata"
+                            muted
+                            playsInline
+                          />
+                          <div className="video-play-badge">▶</div>
+                        </div>
+                      ) : (
+                        <img
+                          src={`/api/image/${image.id}`}
+                          alt={image.filename}
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      )}
                     </div>
                     {viewMode === "list" && (
                       <>
@@ -1727,13 +1767,25 @@ export default function ManageImagePage() {
               {uploads.map((item) => (
                 <div className="upload-card" key={item.id}>
                   <div className="upload-card-thumb">
-                    <img src={item.preview} alt={item.file.name} />
+                    {item.file.type.startsWith("video/") ? (
+                      <div className="video-card-thumb">
+                        <video src={item.preview} muted preload="metadata" />
+                        <div
+                          className="video-play-badge"
+                          style={{ width: "26px", height: "26px", fontSize: "11px" }}
+                        >
+                          ▶
+                        </div>
+                      </div>
+                    ) : (
+                      <img src={item.preview} alt={item.file.name} />
+                    )}
                     {item.status !== "uploading" && (
                       <button
                         type="button"
                         className="upload-remove-button"
                         onClick={() => removeUpload(item.id)}
-                        title="Bỏ ảnh này"
+                        title="Bỏ file này"
                       >
                         ×
                       </button>
@@ -1773,12 +1825,12 @@ export default function ManageImagePage() {
                     cursor: "pointer",
                   }}
                 >
-                  + Thêm ảnh
+                  + Thêm ảnh / video
                 </label>
                 <input
                   id="modal-files-input"
                   type="file"
-                  accept="image/*"
+                  accept="image/*,video/*"
                   multiple
                   onChange={handleChange}
                   className="visually-hidden"
@@ -2105,19 +2157,46 @@ export default function ManageImagePage() {
                   handleNext();
                 }
               }}
-              onDoubleClick={() => setZoom((z) => (z > 1 ? 1 : 2))}
-              style={{ cursor: zoom > 1 ? "grab" : "default" }}
+              onDoubleClick={() =>
+                !selected.mimeType?.startsWith("video/") &&
+                setZoom((z) => (z > 1 ? 1 : 2))
+              }
+              style={{
+                cursor:
+                  selected.mimeType?.startsWith("video/")
+                    ? "default"
+                    : zoom > 1
+                      ? "grab"
+                      : "default",
+              }}
             >
-              <img
-                src={`/api/image/${selected.id}`}
-                alt={selected.filename}
-                className="lightbox-full-img"
-                style={{
-                  transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                  transition:
-                    zoom > 1 ? "transform 140ms ease" : "transform 200ms ease",
-                }}
-              />
+              {selected.mimeType?.startsWith("video/") ? (
+                <video
+                  key={selected.id}
+                  src={`/api/image/${selected.id}`}
+                  controls
+                  autoPlay
+                  playsInline
+                  style={{
+                    maxWidth: "92vw",
+                    maxHeight: "82vh",
+                    borderRadius: "8px",
+                    boxShadow: "0 12px 48px rgba(0, 0, 0, 0.6)",
+                    outline: "none",
+                  }}
+                />
+              ) : (
+                <img
+                  src={`/api/image/${selected.id}`}
+                  alt={selected.filename}
+                  className="lightbox-full-img"
+                  style={{
+                    transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                    transition:
+                      zoom > 1 ? "transform 140ms ease" : "transform 200ms ease",
+                  }}
+                />
+              )}
             </div>
 
             {data.items.length > 1 && (
@@ -2139,6 +2218,7 @@ export default function ManageImagePage() {
           {/* Filmstrip: Quick Thumbnails Strip */}
           {showFilmstrip && data.items.length > 1 && (
             <div
+              ref={filmstripContainerRef}
               className="filmstrip-container"
               onClick={(e) => e.stopPropagation()}
             >
@@ -2154,11 +2234,22 @@ export default function ManageImagePage() {
                   }}
                   title={img.filename}
                 >
-                  <img
-                    src={`/api/image/${img.id}`}
-                    alt={img.filename}
-                    loading="lazy"
-                  />
+                  {img.mimeType?.startsWith("video/") ? (
+                    <div className="filmstrip-video-thumb">
+                      <video
+                        src={`/api/image/${img.id}`}
+                        muted
+                        preload="metadata"
+                      />
+                      <span className="filmstrip-video-badge">▶</span>
+                    </div>
+                  ) : (
+                    <img
+                      src={`/api/image/${img.id}`}
+                      alt={img.filename}
+                      loading="lazy"
+                    />
+                  )}
                 </button>
               ))}
             </div>

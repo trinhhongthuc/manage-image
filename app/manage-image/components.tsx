@@ -27,8 +27,8 @@ export function ManageHeader({
   return (
     <header className="manage-toolbar">
       <div>
-        <p className="login-kicker">PRIVATE IMAGE VAULT</p>
-        <h1>Thư viện hình ảnh</h1>
+        <p className="login-kicker">PRIVATE MEDIA VAULT</p>
+        <h1>Thư viện hình ảnh & Video</h1>
       </div>
       <div className="manage-toolbar-actions">
         <button className="cancel-upload-button" type="button" onClick={onToggleTheme}>
@@ -75,11 +75,11 @@ export function UploadDropzone({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <input id="files" className="visually-hidden" type="file" accept="image/*" multiple onChange={onChange} />
+      <input id="files" className="visually-hidden" type="file" accept="image/*,video/*" multiple onChange={onChange} />
       <p className="login-kicker">UPLOAD & CLIPBOARD</p>
-      <h2>Kéo ảnh vào đây hoặc bấm Ctrl + V</h2>
+      <h2>Kéo ảnh hoặc video vào đây hoặc bấm Ctrl + V</h2>
       <p>
-        Hỗ trợ <label htmlFor="files">chọn nhiều file</label>, kéo thả, hoặc dán trực tiếp ảnh chụp màn hình bằng <strong>Ctrl + V</strong>.
+        Hỗ trợ <label htmlFor="files">chọn nhiều file</label>, kéo thả ảnh/video, hoặc dán trực tiếp ảnh chụp màn hình bằng <strong>Ctrl + V</strong>.
       </p>
     </div>
   );

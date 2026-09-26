@@ -113,13 +113,13 @@ export async function POST(request: Request) {
       }
 
       const mimeType = fetchRes.headers.get("content-type") || "image/jpeg";
-      if (!mimeType.startsWith("image/")) {
-        return jsonError(`URL không phải là file ảnh hợp lệ (định dạng: ${mimeType}).`, 400);
+      if (!mimeType.startsWith("image/") && !mimeType.startsWith("video/")) {
+        return jsonError(`URL không phải là file ảnh hoặc video hợp lệ (định dạng: ${mimeType}).`, 400);
       }
 
       const arrayBuf = await fetchRes.arrayBuffer();
       if (arrayBuf.byteLength > MAX_FILE_SIZE) {
-        return jsonError("Kích thước ảnh vượt quá 50 MB.", 413);
+        return jsonError("Kích thước file vượt quá 50 MB.", 413);
       }
 
       let filename = body.filename?.trim();
@@ -128,12 +128,12 @@ export async function POST(request: Request) {
           const parsedUrl = new URL(body.url);
           filename = parsedUrl.pathname.split("/").pop()?.split("?")[0];
         } catch {
-          filename = `url_image_${Date.now()}`;
+          filename = `url_media_${Date.now()}`;
         }
       }
       if (!filename || !filename.includes(".")) {
         const ext = mimeType.split("/")[1]?.replace("jpeg", "jpg").split(";")[0] || "jpg";
-        filename = `${filename || `url_image_${Date.now()}`}.${ext}`;
+        filename = `${filename || `url_media_${Date.now()}`}.${ext}`;
       }
 
       const file = new File([arrayBuf], filename, { type: mimeType });
@@ -156,8 +156,10 @@ export async function POST(request: Request) {
   const isFastUpload = form.get("fast") === "true";
   const files = form.getAll("files").filter((value): value is File => value instanceof File);
   if (!files.length) return jsonError("Không có file.", 400);
-  if (files.some((file) => !file.type.startsWith("image/"))) return jsonError("Chỉ chấp nhận file ảnh.", 400);
-  if (files.some((file) => file.size > MAX_FILE_SIZE)) return jsonError("Mỗi ảnh tối đa 50 MB.", 413);
+  if (files.some((file) => !file.type.startsWith("image/") && !file.type.startsWith("video/"))) {
+    return jsonError("Chỉ chấp nhận file ảnh hoặc video.", 400);
+  }
+  if (files.some((file) => file.size > MAX_FILE_SIZE)) return jsonError("Mỗi file tối đa 50 MB.", 413);
 
   // Process files sequentially with 900ms delay to respect Telegram's 1 msg/sec per-chat rate limit
   const DELAY_BETWEEN_FILES_MS = isFastUpload ? 0 : 900;
@@ -176,9 +178,11 @@ export async function POST(request: Request) {
         ...(album ? { album } : {}),
       });
     } catch (error) {
+      const msg = error instanceof Error ? error.message : "Upload thất bại.";
+      console.error(`[Upload Error] File "${file.name}":`, msg);
       errors.push({
         filename: file.name,
-        error: error instanceof Error ? error.message : "Upload thất bại.",
+        error: msg,
       });
     }
   }
@@ -187,6 +191,7 @@ export async function POST(request: Request) {
     try {
       await appendRecords(records);
     } catch (error) {
+      console.error("[GitHub Shard Error]:", error);
       return jsonError(
         `Telegram đã nhận ảnh nhưng GitHub chưa lưu metadata: ${error instanceof Error ? error.message : "lỗi không xác định"}`,
         502
@@ -194,7 +199,15 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ items: records, errors }, { status: errors.length && !records.length ? 502 : 200 });
+  const isCompleteFailure = errors.length > 0 && records.length === 0;
+  return Response.json(
+    {
+      items: records,
+      errors,
+      error: isCompleteFailure ? errors[0]?.error || "Upload thất bại." : undefined,
+    },
+    { status: isCompleteFailure ? 502 : 200 }
+  );
 }
 
 export async function DELETE(request: Request) {
