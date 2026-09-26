@@ -1392,7 +1392,7 @@ export default function ManageImagePage() {
                         <div className="video-card-thumb">
                           <video
                             src={`/api/image/${image.id}`}
-                            preload="metadata"
+                            preload="auto"
                             muted
                             playsInline
                           />

