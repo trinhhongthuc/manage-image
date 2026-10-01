@@ -10007,5 +10007,27 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-10-01T02:03:31.984Z",
     "album": "Bi/MySaki.Seto"
+  },
+  {
+    "id": "img_1deaaa1b-cf16-46cd-9219-8276bb8870ad",
+    "filename": "2213_1632710208410834.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwACPgpqvb_sdzC6USYXV4KvJRvV5fVAFQACJSEAAgnv8VWIPxHLIHogVT0E",
+    "telegramFileUniqueId": "AgADJSEAAgnv8VU",
+    "telegramMessageId": 15882,
+    "size": 145348,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-01T02:05:33.488Z",
+    "album": "Bi/MySaki.Seto"
+  },
+  {
+    "id": "img_ece7a177-4a55-45ff-a68d-36f9095bd02d",
+    "filename": "2214_1632710205077501.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwACPgtqvb_veEGcs07YHhF1mHh9m6c1BQACJiEAAgnv8VWkKKTNexK3bD0E",
+    "telegramFileUniqueId": "AgADJiEAAgnv8VU",
+    "telegramMessageId": 15883,
+    "size": 132605,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-01T02:05:36.364Z",
+    "album": "Bi/MySaki.Seto"
   }
 ]
