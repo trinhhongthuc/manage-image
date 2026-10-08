@@ -42,6 +42,45 @@ async function github(path: string, init?: RequestInit) {
   }
 }
 
+export async function readGitHubJson<T>(path: string, fallback: T): Promise<{ value: T; sha?: string }> {
+  const { owner, repo, branch } = config();
+  const response = await github(`/repos/${owner}/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`);
+  if (response.status === 404) return { value: fallback };
+  if (!response.ok) throw new Error(`GitHub đọc file thất bại (${response.status}).`);
+
+  const payload = (await response.json()) as { content?: string; sha?: string };
+  const content = payload.content ? Buffer.from(payload.content.replace(/\n/g, ""), "base64").toString("utf8") : "";
+
+  try {
+    return { value: content ? (JSON.parse(content) as T) : fallback, sha: payload.sha };
+  } catch {
+    return { value: fallback, sha: payload.sha };
+  }
+}
+
+export async function writeGitHubJson<T>(path: string, value: T, message: string, sha?: string) {
+  const { owner, repo, branch } = config();
+  const body = {
+    message,
+    content: Buffer.from(JSON.stringify(value, null, 2) + "\n").toString("base64"),
+    branch,
+    ...(sha ? { sha } : {}),
+  };
+
+  const response = await github(`/repos/${owner}/${repo}/contents/${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub ghi file thất bại (${response.status}).`);
+  }
+
+  const payload = (await response.json()) as { content?: { sha?: string } };
+  return { sha: payload.content?.sha ?? sha };
+}
+
 type ShardCacheEntry = { data: { items: ImageRecord[]; sha?: string }; expiresAt: number };
 const shardCache = new Map<number, ShardCacheEntry>();
 
