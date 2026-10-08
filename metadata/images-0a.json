@@ -108,5 +108,38 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-09-26T03:07:54.204Z",
     "album": "Bi/instagram_user_blueji_bbbbb"
+  },
+  {
+    "id": "img_aa346c5b-3009-516b-ac01-1ae91aa5bf0a",
+    "filename": "telegram_AQADDhNrG5dHOVZ-.jpg",
+    "telegramFileId": "AgACAgUAAyEFAAMBBamymwACko9qxyFWXp3SQLQsJWh-QFZGrH2tFAACDhNrG5dHOVba69KbU9HknQEAAwIAA3kAAz0E",
+    "telegramFileUniqueId": "AQADDhNrG5dHOVZ-",
+    "telegramMessageId": 37519,
+    "size": 140779,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-08T04:51:35.219Z",
+    "album": "Normal"
+  },
+  {
+    "id": "img_fd506ca1-6c50-5b71-a1d5-17cb65c041ea",
+    "filename": "telegram_AQAD_hNrG5dHQVZ-.jpg",
+    "telegramFileId": "AgACAgUAAyEFAAMBBamymwACkplqx4rVNH9sKuNjLRobHCD4OKfmOQAC_hNrG5dHQVY-5eyFGSgkfgEAAwIAA3kAAz0E",
+    "telegramFileUniqueId": "AQAD_hNrG5dHQVZ-",
+    "telegramMessageId": 37529,
+    "size": 208294,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-08T12:21:55.958Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_ead7a3a3-211a-5584-bd3d-f3cfec97cc6a",
+    "filename": "telegram_AQADAhRrG5dHQVZ8.jpg",
+    "telegramFileId": "AgACAgUAAyEFAAMBBamymwACkptqx4rVsEqT3a67ILYFhiggE4QzUAACAhRrG5dHQVZEi1v2aD75-QEAAwIAA3cAAz0E",
+    "telegramFileUniqueId": "AQADAhRrG5dHQVZ8",
+    "telegramMessageId": 37531,
+    "size": 130834,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-08T12:21:59.935Z",
+    "album": "Bi/SX"
   }
 ]
