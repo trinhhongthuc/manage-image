@@ -1,4 +1,4 @@
-import { appendTelegramRecord } from "@/lib/github";
+import { appendTelegramRecords } from "@/lib/github";
 
 import {
   answerCallbackQuery,
@@ -389,6 +389,7 @@ async function handleCommand(
   }
 }
 
+
 async function handleIncomingMedia(
   message: TelegramWebhookMessage,
 ) {
@@ -467,12 +468,6 @@ async function handleIncomingMedia(
     return;
   }
 
-  let savedRecord:
-    | ReturnType<typeof buildImageRecordFromMessage>
-    | undefined;
-
-  let savedFolder: string | undefined;
-
   try {
     const media = photo ?? document;
 
@@ -490,33 +485,16 @@ async function handleIncomingMedia(
     });
 
     const fileUniqueId = media?.file_unique_id;
-
-    if (
-      typeof fileUniqueId !== "string" ||
-      !fileUniqueId
-    ) {
-      throw new Error(
-        "Telegram image is missing file_unique_id.",
-      );
+    if (typeof fileUniqueId !== "string" || !fileUniqueId) {
+      throw new Error("Telegram image is missing file_unique_id.");
     }
 
     console.info("[Telegram] File unique ID", {
       fileUniqueId,
     });
 
-    console.info(
-      "[Telegram] Getting selected folder",
-    );
-
-    const selectedFolder =
-      await getSelectedFolder(
-        chatId,
-        userId,
-      );
-
-    console.info("[Telegram] Current album", {
-      album: selectedFolder,
-    });
+    const selectedFolder = await getSelectedFolder(chatId, userId);
+    console.info("[Telegram] Current album", { album: selectedFolder });
 
     if (!selectedFolder) {
       await sendTelegramText(
@@ -526,100 +504,48 @@ async function handleIncomingMedia(
       return;
     }
 
-    console.info(
-      "[Telegram] Reading GitHub metadata",
-    );
+    console.info("[Telegram] Creating metadata for immediate persistence");
+    const record = buildImageRecordFromMessage(message, selectedFolder);
+    console.info("[Telegram] Metadata created", {
+      id: record.id,
+      filename: record.filename,
+      telegramFileUniqueId: record.telegramFileUniqueId,
+      telegramMessageId: record.telegramMessageId,
+      size: record.size,
+      mimeType: record.mimeType,
+      album: record.album,
+    });
 
-    const result = await appendTelegramRecord(
-      fileUniqueId,
-      () => {
-        console.info(
-          "[Telegram] Creating metadata",
-        );
+    // IMPORTANT: Persist immediately.
+    // Do not defer this work with setTimeout/in-memory queues because this route
+    // runs as a Vercel serverless function and the process may terminate as
+    // soon as the request finishes.
+    const result = await appendTelegramRecords([record]);
 
-        const record =
-          buildImageRecordFromMessage(
-            message,
-            selectedFolder,
-          );
+    console.info("[GitHub] Telegram image persistence result", {
+      chatId,
+      userId,
+      album: selectedFolder,
+      saved: result.saved.length,
+      duplicates: result.duplicates,
+      failed: result.failed,
+    });
 
-        console.info(
-          "[Telegram] Metadata created",
-          {
-            id: record.id,
-            filename: record.filename,
-            telegramFileUniqueId:
-              record.telegramFileUniqueId,
-            telegramMessageId:
-              record.telegramMessageId,
-            size: record.size,
-            mimeType: record.mimeType,
-            album: record.album,
-          },
-        );
-
-        console.info(
-          "[GitHub] Updating metadata",
-        );
-
-        return record;
-      },
-      (existingCount, duplicate) => {
-        console.info(
-          "[Telegram] Existing metadata count",
-          {
-            count: existingCount,
-          },
-        );
-
-        console.info(
-          "[Telegram] Duplicate check",
-          {
-            duplicate,
-          },
-        );
-      },
-    );
-
-    console.info(
-      "[GitHub] appendTelegramRecord result",
-      {
-        added: result.added,
-        hasRecord: Boolean(result.record),
-      },
-    );
-
-    if (!result.added) {
-      await sendTelegramText(
-        chatId,
-        `⚠️ This image already exists in GitHub metadata.\n\n📁 Folder: ${selectedFolder}`,
-      );
+    // Do not send a success message for every image. Bulk Telegram uploads
+    // generate many webhook requests, and one Telegram message per image
+    // causes severe chat spam/lag. The image is already persisted safely.
+    if (result.duplicates > 0 && result.saved.length === 0) {
+      console.info("[Telegram] Duplicate image ignored", {
+        fileUniqueId,
+      });
       return;
     }
 
-    const record = result.record;
-
-    if (!record) {
-      throw new Error(
-        "GitHub metadata write succeeded without returning the record.",
-      );
+    if (result.failed > 0 && result.saved.length === 0) {
+      throw new Error("Telegram image metadata could not be saved.");
     }
-
-    console.info(
-      "[GitHub] Update successful",
-      {
-        id: record.id,
-        album: selectedFolder,
-      },
-    );
-
-    savedRecord = record;
-    savedFolder = selectedFolder;
   } catch (error) {
-    logProcessingError(
-      "Image processing failed",
-      error,
-    );
+    logProcessingError("Image processing failed", error);
 
     try {
       await sendTelegramText(
@@ -627,36 +553,7 @@ async function handleIncomingMedia(
         "❌ Failed to save image metadata.\n\nPlease try again.",
       );
     } catch (notificationError) {
-      logProcessingError(
-        "Failed to send image processing failure notification",
-        notificationError,
-      );
-    }
-
-    return;
-  }
-
-  if (savedRecord && savedFolder) {
-    try {
-      await sendTelegramText(
-        chatId,
-        `✅ Image saved\n\n📁 Folder: ${savedFolder}\n🖼️ File: ${savedRecord.filename}`,
-      );
-
-      console.info(
-        "[Telegram] Image saved successfully",
-        {
-          fileUniqueId:
-            savedRecord.telegramFileUniqueId,
-          album: savedFolder,
-          filename: savedRecord.filename,
-        },
-      );
-    } catch (error) {
-      logProcessingError(
-        "Metadata saved but Telegram success notification failed",
-        error,
-      );
+      logProcessingError("Failed to send image processing failure notification", notificationError);
     }
   }
 }
