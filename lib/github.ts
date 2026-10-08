@@ -21,6 +21,17 @@ function shardFor(id: string) {
   return Number.parseInt(id.slice(-2), 16) % shardCount;
 }
 
+class GitHubResponseError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "GitHubResponseError";
+  }
+}
+
+function isShaConflict(error: unknown) {
+  return error instanceof GitHubResponseError && (error.status === 409 || error.status === 422);
+}
+
 async function github(path: string, init?: RequestInit) {
   const { token } = config();
   try {
@@ -84,9 +95,9 @@ export async function writeGitHubJson<T>(path: string, value: T, message: string
 type ShardCacheEntry = { data: { items: ImageRecord[]; sha?: string }; expiresAt: number };
 const shardCache = new Map<number, ShardCacheEntry>();
 
-async function readShard(index: number): Promise<{ items: ImageRecord[]; sha?: string }> {
+async function readShard(index: number, fresh = false): Promise<{ items: ImageRecord[]; sha?: string }> {
   const cached = shardCache.get(index);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!fresh && cached && cached.expiresAt > Date.now()) {
     return cached.data;
   }
 
@@ -119,7 +130,7 @@ async function writeShard(index: number, items: ImageRecord[], sha?: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(`GitHub ghi metadata thất bại (${response.status}).`);
+  if (!response.ok) throw new GitHubResponseError(`GitHub ghi metadata thất bại (${response.status}).`, response.status);
   const payload = (await response.json()) as { content?: { sha?: string } };
   shardCache.set(index, {
     data: { items, sha: payload.content?.sha ?? sha },
@@ -243,19 +254,57 @@ export async function appendRecords(records: ImageRecord[]) {
   }
   for (const [shard, additions] of byShard) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const current = await readShard(shard);
+      const current = await readShard(shard, true);
       try {
         await writeShard(shard, [...current.items, ...additions], current.sha);
         break;
       } catch (error) {
-        if (attempt === 2) throw error;
+        shardCache.delete(shard);
+        if (!isShaConflict(error) || attempt === 2) throw error;
       }
     }
   }
 }
 
-export async function readAllRecords() {
-  const shards = await Promise.all(Array.from({ length: shardCount }, (_, index) => readShard(index)));
+export async function appendTelegramRecord(
+  fileUniqueId: string,
+  createRecord: () => ImageRecord,
+  onDuplicateCheck: (existingCount: number, duplicate: boolean) => void,
+): Promise<{ added: boolean; existingCount: number; record?: ImageRecord }> {
+  if (!fileUniqueId) throw new Error("Telegram file_unique_id is required.");
+  const existingRecords = await readAllRecords(true);
+  const duplicate = existingRecords.some((existing) => existing.telegramFileUniqueId === fileUniqueId);
+  onDuplicateCheck(existingRecords.length, duplicate);
+  if (duplicate) {
+    return { added: false, existingCount: existingRecords.length };
+  }
+
+  const record = createRecord();
+  if (record.telegramFileUniqueId !== fileUniqueId) {
+    throw new Error("Telegram metadata file_unique_id does not match the duplicate-check key.");
+  }
+  const shard = shardFor(record.id);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await readShard(shard, true);
+    if (current.items.some((existing) => existing.telegramFileUniqueId === fileUniqueId)) {
+      onDuplicateCheck(existingRecords.length, true);
+      return { added: false, existingCount: existingRecords.length };
+    }
+
+    try {
+      await writeShard(shard, [...current.items, record], current.sha);
+      return { added: true, existingCount: existingRecords.length, record };
+    } catch (error) {
+      shardCache.delete(shard);
+      if (!isShaConflict(error) || attempt === 2) throw error;
+    }
+  }
+
+  throw new Error("GitHub metadata update exceeded retry limit.");
+}
+
+export async function readAllRecords(fresh = false) {
+  const shards = await Promise.all(Array.from({ length: shardCount }, (_, index) => readShard(index, fresh)));
   return shards.flatMap((shard) => shard.items);
 }
 

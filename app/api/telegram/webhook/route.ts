@@ -1,26 +1,60 @@
-import { appendRecords, readAllRecords } from "@/lib/github";
+import { appendTelegramRecord } from "@/lib/github";
 import {
   answerCallbackQuery,
   buildImageRecordFromMessage,
   buildSelectFolderMessage,
   canUserAccess,
   editTelegramText,
-  ensureNoDuplicate,
   getAvailableFolders,
   getSelectedFolder,
   isTelegramImageDocument,
   saveSelectedFolder,
   sendTelegramText,
 } from "@/lib/telegram-bot";
-import { telegramRequest } from "@/lib/telegram";
 
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
+
+type TelegramWebhookMedia = {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  file_name?: string;
+  mime_type?: string;
+};
+
+type TelegramWebhookMessage = {
+  message_id: number;
+  chat: { id: number };
+  from?: { id: number };
+  text?: string;
+  photo?: TelegramWebhookMedia[];
+  document?: TelegramWebhookMedia;
+};
+
+type TelegramCallbackQuery = {
+  id: string;
+  data?: string;
+  from?: { id: number };
+  message?: TelegramWebhookMessage;
+};
+
+type TelegramWebhookUpdate = {
+  callback_query?: TelegramCallbackQuery;
+  message?: TelegramWebhookMessage;
+};
 
 function jsonResponse(payload: Record<string, unknown>, status = 200) {
   return Response.json(payload, { status });
 }
 
-async function handleFolderSelection(callbackQuery: any) {
+function logProcessingError(stage: string, error: unknown) {
+  console.error(`[Telegram] ${stage}`, {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+}
+
+async function handleFolderSelection(callbackQuery: TelegramCallbackQuery) {
   const { id, data, from, message } = callbackQuery ?? {};
   if (!message || !data) return;
 
@@ -88,7 +122,7 @@ async function handleFolderSelection(callbackQuery: any) {
   }
 }
 
-async function handleCommand(message: any) {
+async function handleCommand(message: TelegramWebhookMessage) {
   const chatId = message.chat?.id;
   const userId = message.from?.id;
   if (!chatId || !userId) return;
@@ -157,45 +191,92 @@ async function handleCommand(message: any) {
   }
 }
 
-async function handleIncomingMedia(message: any) {
+async function handleIncomingMedia(message: TelegramWebhookMessage) {
   const chatId = message.chat?.id;
   const userId = message.from?.id;
   if (!chatId || !userId) return;
+
+  const photo = Array.isArray(message.photo) && message.photo.length > 0 ? message.photo.at(-1) : undefined;
+  const document = message.document;
+  const isImageDocument = Boolean(document && isTelegramImageDocument(document));
+  console.info("[Telegram] Message contains image media", {
+    containsPhoto: Boolean(photo),
+    containsImageDocument: isImageDocument,
+  });
+
+  if (!photo && !isImageDocument) {
+    console.info("[Telegram] Ignoring unsupported document or message");
+    return;
+  }
+
+  console.info("[Telegram] Telegram user/chat ID", { userId, chatId });
 
   if (!canUserAccess(userId)) {
     await sendTelegramText(chatId, "🚫 Bạn không có quyền sử dụng bot này.");
     return;
   }
 
-  const photo = Array.isArray(message.photo) && message.photo.length > 0 ? message.photo[message.photo.length - 1] : undefined;
-  const document = message.document;
-  const media = photo ?? document;
-  if (!media) return;
-
-  if (document && !isTelegramImageDocument(document)) return;
-
-  const selectedFolder = await getSelectedFolder(chatId, userId);
-  if (!selectedFolder) {
-    await sendTelegramText(chatId, "📁 No folder selected yet. Please run /folders and choose a destination folder before sending images.");
-    return;
-  }
-
-  const record = buildImageRecordFromMessage(message, selectedFolder);
-  const alreadyExists = await ensureNoDuplicate(record);
-  if (alreadyExists) {
-    await sendTelegramText(chatId, `⚠️ This image has already been synced to GitHub.\n\n📁 ${selectedFolder}`);
-    return;
-  }
-
+  let savedRecord: ReturnType<typeof buildImageRecordFromMessage> | undefined;
+  let savedFolder: string | undefined;
   try {
-    await appendRecords([record]);
-    await sendTelegramText(
-      chatId,
-      `✅ Image saved successfully!\n\n📁 Folder: ${selectedFolder}\n\n🖼 File: ${record.filename}`,
-    );
+    const media = photo ?? document;
+    const fileUniqueId = media?.file_unique_id;
+    if (typeof fileUniqueId !== "string" || !fileUniqueId) {
+      throw new Error("Telegram image is missing file_unique_id.");
+    }
+    console.info("[Telegram] File unique ID", { fileUniqueId });
+
+    const selectedFolder = await getSelectedFolder(chatId, userId);
+    console.info("[Telegram] Current album", { album: selectedFolder });
+    if (!selectedFolder) {
+      await sendTelegramText(chatId, "❌ Please select a folder first using /folders.");
+      return;
+    }
+
+    console.info("[Telegram] Reading GitHub metadata");
+    const result = await appendTelegramRecord(fileUniqueId, () => {
+      console.info("[Telegram] Creating metadata");
+      const record = buildImageRecordFromMessage(message, selectedFolder);
+      console.info("[GitHub] Updating metadata");
+      return record;
+    }, (existingCount, duplicate) => {
+      console.info("[Telegram] Existing metadata count", { count: existingCount });
+      console.info("[Telegram] Duplicate check", { duplicate });
+    });
+    if (!result.added) {
+      await sendTelegramText(chatId, `⚠️ This image already exists in GitHub metadata.\n\n📁 Folder: ${selectedFolder}`);
+      return;
+    }
+
+    const record = result.record;
+    if (!record) throw new Error("GitHub metadata write succeeded without returning the record.");
+    console.info("[GitHub] Update successful", { id: record.id, album: selectedFolder });
+    savedRecord = record;
+    savedFolder = selectedFolder;
   } catch (error) {
-    console.error("[Telegram Sync Error]", error);
-    await sendTelegramText(chatId, `❌ Unable to save image metadata to GitHub.\n\n${error instanceof Error ? error.message : "Unknown error"}`);
+    logProcessingError("Image processing failed", error);
+    try {
+      await sendTelegramText(chatId, "❌ Failed to save image metadata.\n\nPlease try again.");
+    } catch (notificationError) {
+      logProcessingError("Failed to send image processing failure notification", notificationError);
+    }
+    return;
+  }
+
+  if (savedRecord && savedFolder) {
+    try {
+      await sendTelegramText(
+        chatId,
+        `✅ Image saved\n\n📁 Folder: ${savedFolder}\n🖼️ File: ${savedRecord.filename}`,
+      );
+      console.info("[Telegram] Image saved successfully", {
+        fileUniqueId: savedRecord.telegramFileUniqueId,
+        album: savedFolder,
+        filename: savedRecord.filename,
+      });
+    } catch (error) {
+      logProcessingError("Metadata saved but Telegram success notification failed", error);
+    }
   }
 }
 
@@ -210,9 +291,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    const update = await request.json();
+    console.info("[Telegram] Webhook received");
+    const update = (await request.json()) as TelegramWebhookUpdate;
     if (!update || typeof update !== "object") return jsonResponse({ ok: true });
 
+    console.info("[Telegram] Update type", {
+      type: update.callback_query ? "callback_query" : update.message ? "message" : "unsupported",
+    });
     if (update.callback_query) {
       await handleFolderSelection(update.callback_query);
       return jsonResponse({ ok: true });

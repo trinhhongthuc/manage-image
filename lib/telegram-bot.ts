@@ -1,6 +1,7 @@
-import { appendRecords, readAllRecords, readFolders, readGitHubJson, writeGitHubJson } from "@/lib/github";
-import { telegramRequest } from "@/lib/telegram";
+import { createHash } from "node:crypto";
+import { readAllRecords, readFolders, readGitHubJson, writeGitHubJson } from "@/lib/github";
 import type { ImageRecord } from "@/lib/types";
+import { telegramRequest } from "@/lib/telegram";
 
 export const TELEGRAM_STATE_PATH = "config/telegram-state.json";
 
@@ -77,34 +78,50 @@ export async function saveSelectedFolder(chatId: string | number, userId: string
   return selected;
 }
 
-export function isTelegramImageDocument(document: { mime_type?: string; file_name?: string } | undefined) {
+export function isTelegramImageDocument(document: { mime_type?: string } | undefined) {
   const mimeType = (document?.mime_type ?? "").toLowerCase();
-  const fileName = (document?.file_name ?? "").toLowerCase();
-  return mimeType.startsWith("image/") || /(png|jpe?g|gif|webp|bmp)$/i.test(fileName);
+  return mimeType.startsWith("image/");
 }
 
-function fallbackFilename(message: { document?: { file_name?: string }; photo?: Array<{ file_id?: string }> }) {
-  const documentName = message.document?.file_name?.trim();
-  if (documentName && documentName.length > 0) return documentName;
-  if (message.photo && message.photo.length > 0) return `telegram_photo_${Date.now()}.jpg`;
-  return `telegram_image_${Date.now()}.jpg`;
+type TelegramImageMedia = {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  file_name?: string;
+  mime_type?: string;
+};
+
+type TelegramImageMessage = {
+  message_id: number;
+  photo?: TelegramImageMedia[];
+  document?: TelegramImageMedia;
+};
+
+function telegramImageRecordId(fileUniqueId: string) {
+  const bytes = createHash("sha256").update(fileUniqueId).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  const uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return `img_${uuid}`;
 }
 
-export function buildImageRecordFromMessage(message: any, selectedFolder: string): ImageRecord {
-  const photo = Array.isArray(message?.photo) && message.photo.length > 0 ? message.photo[message.photo.length - 1] : undefined;
-  const document = message?.document;
+export function buildImageRecordFromMessage(message: TelegramImageMessage, selectedFolder: string): ImageRecord {
+  const photo = message.photo?.at(-1);
+  const document = message.document;
   const media = photo ?? document;
-  const fallbackName = fallbackFilename(message);
-  const fileName = document?.file_name?.trim() || (photo ? `telegram_photo_${Date.now()}.jpg` : fallbackName);
-  const mimeType = document?.mime_type || (fileName.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
-  const uniqueId = media?.file_unique_id || `${message.chat?.id ?? "chat"}-${message.message_id ?? Date.now()}`;
+  if (!media?.file_id || !media.file_unique_id) {
+    throw new Error("Telegram image is missing its file identifiers.");
+  }
+  const fileName = document?.file_name?.trim() || `telegram_${media.file_unique_id}.jpg`;
+  const mimeType = document?.mime_type || "image/jpeg";
 
   return {
-    id: `img_${crypto.randomUUID()}`,
+    id: telegramImageRecordId(media.file_unique_id),
     filename: fileName,
-    telegramFileId: media?.file_id ?? "",
-    telegramFileUniqueId: uniqueId,
-    telegramMessageId: Number(message?.message_id ?? 0),
+    telegramFileId: media.file_id,
+    telegramFileUniqueId: media.file_unique_id,
+    telegramMessageId: message.message_id,
     size: Number(media?.file_size ?? 0),
     mimeType,
     createdAt: new Date().toISOString(),
@@ -170,9 +187,4 @@ export function canUserAccess(userId?: number | string) {
   if (!allowed || allowed === "") return true;
   if (!userId && userId !== 0) return false;
   return String(userId) === String(allowed);
-}
-
-export async function ensureNoDuplicate(record: ImageRecord) {
-  const items = await readAllRecords();
-  return items.some((item) => item.telegramFileUniqueId === record.telegramFileUniqueId);
 }
