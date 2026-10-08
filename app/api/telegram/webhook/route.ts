@@ -1,4 +1,4 @@
-import { appendTelegramRecord } from "@/lib/github";
+import { appendTelegramRecords } from "@/lib/github";
 
 import {
   answerCallbackQuery,
@@ -389,6 +389,160 @@ async function handleCommand(
   }
 }
 
+const TELEGRAM_BATCH_DEBOUNCE_MS = 3000;
+
+const pendingTelegramBatches = new Map<
+  string,
+  {
+    chatId: number;
+    userId: number;
+    album: string;
+    records: ReturnType<typeof buildImageRecordFromMessage>[];
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+>();
+
+function buildSingleImageSummary(album: string, filename?: string) {
+  return `✅ Image saved\n\n📁 Folder: ${album}\n🖼️ File: ${filename ?? "image"}`;
+}
+
+function buildBatchSummary(
+  album: string,
+  totalReceived: number,
+  saved: number,
+  duplicates: number,
+  failed: number,
+) {
+  return [
+    "✅ Sync completed",
+    "",
+    `📁 Folder: ${album}`,
+    `🖼️ Total received: ${totalReceived}`,
+    `💾 Saved: ${saved}`,
+    `♻️ Duplicates: ${duplicates}`,
+    `❌ Failed: ${failed}`,
+  ].join("\n");
+}
+
+async function flushTelegramBatch(batchKey: string) {
+  const batch = pendingTelegramBatches.get(batchKey);
+  if (!batch) return;
+
+  pendingTelegramBatches.delete(batchKey);
+  if (!batch.records.length) return;
+
+  const uniqueRecords = new Map<string, ReturnType<typeof buildImageRecordFromMessage>>();
+  for (const record of batch.records) {
+    const fileUniqueId = record.telegramFileUniqueId;
+    if (!fileUniqueId) continue;
+    if (!uniqueRecords.has(fileUniqueId)) {
+      uniqueRecords.set(fileUniqueId, record);
+    }
+  }
+
+  const dedupedRecords = Array.from(uniqueRecords.values());
+  if (!dedupedRecords.length) {
+    await sendTelegramText(batch.chatId, `⚠️ No valid image metadata was collected for this batch.\n\n📁 Folder: ${batch.album}`);
+    return;
+  }
+
+  try {
+    console.info("[Telegram] Processing batched media", {
+      chatId: batch.chatId,
+      userId: batch.userId,
+      album: batch.album,
+      totalReceived: dedupedRecords.length,
+    });
+
+    const result = await appendTelegramRecords(dedupedRecords, (existingCount, duplicate) => {
+      console.info("[Telegram] Existing metadata count", { count: existingCount });
+      console.info("[Telegram] Duplicate check", { duplicate });
+    });
+
+    const saved = result.saved.length;
+    const duplicates = result.duplicates;
+    const failed = result.failed;
+
+    console.info("[GitHub] Batch metadata update result", {
+      chatId: batch.chatId,
+      album: batch.album,
+      totalReceived: dedupedRecords.length,
+      saved,
+      duplicates,
+      failed,
+    });
+
+    if (dedupedRecords.length <= 1) {
+      const record = result.saved[0] ?? dedupedRecords[0];
+      if (record) {
+        const summary = buildSingleImageSummary(batch.album, record.filename);
+        await sendTelegramText(batch.chatId, summary);
+        return;
+      }
+    }
+
+    if (saved === 0 && duplicates > 0 && failed === 0) {
+      await sendTelegramText(
+        batch.chatId,
+        `⚠️ This batch already exists in GitHub metadata.\n\n📁 Folder: ${batch.album}`,
+      );
+      return;
+    }
+
+    const summary = buildBatchSummary(batch.album, dedupedRecords.length, saved, duplicates, failed);
+    await sendTelegramText(batch.chatId, summary);
+  } catch (error) {
+    logProcessingError("Batch image processing failed", error);
+    await sendTelegramText(
+      batch.chatId,
+      "❌ Failed to save image metadata.\n\nPlease try again.",
+    );
+  }
+}
+
+function queueTelegramMediaForBatch(
+  chatId: number,
+  userId: number,
+  selectedFolder: string,
+  record: ReturnType<typeof buildImageRecordFromMessage>,
+) {
+  const batchKey = `${chatId}:${userId}`;
+  const currentBatch = pendingTelegramBatches.get(batchKey) ?? {
+    chatId,
+    userId,
+    album: selectedFolder,
+    records: [],
+    timer: null,
+  };
+
+  currentBatch.album = selectedFolder;
+  const duplicateInQueue = currentBatch.records.some(
+    (queued) => queued.telegramFileUniqueId === record.telegramFileUniqueId,
+  );
+
+  if (!duplicateInQueue) {
+    currentBatch.records.push(record);
+  }
+
+  if (currentBatch.timer) {
+    clearTimeout(currentBatch.timer);
+  }
+
+  currentBatch.timer = setTimeout(() => {
+    void flushTelegramBatch(batchKey);
+  }, TELEGRAM_BATCH_DEBOUNCE_MS);
+
+  pendingTelegramBatches.set(batchKey, currentBatch);
+
+  console.info("[Telegram] Queued media for batch sync", {
+    chatId,
+    userId,
+    album: selectedFolder,
+    queuedCount: currentBatch.records.length,
+    fileUniqueId: record.telegramFileUniqueId,
+  });
+}
+
 async function handleIncomingMedia(
   message: TelegramWebhookMessage,
 ) {
@@ -467,12 +621,6 @@ async function handleIncomingMedia(
     return;
   }
 
-  let savedRecord:
-    | ReturnType<typeof buildImageRecordFromMessage>
-    | undefined;
-
-  let savedFolder: string | undefined;
-
   try {
     const media = photo ?? document;
 
@@ -490,33 +638,16 @@ async function handleIncomingMedia(
     });
 
     const fileUniqueId = media?.file_unique_id;
-
-    if (
-      typeof fileUniqueId !== "string" ||
-      !fileUniqueId
-    ) {
-      throw new Error(
-        "Telegram image is missing file_unique_id.",
-      );
+    if (typeof fileUniqueId !== "string" || !fileUniqueId) {
+      throw new Error("Telegram image is missing file_unique_id.");
     }
 
     console.info("[Telegram] File unique ID", {
       fileUniqueId,
     });
 
-    console.info(
-      "[Telegram] Getting selected folder",
-    );
-
-    const selectedFolder =
-      await getSelectedFolder(
-        chatId,
-        userId,
-      );
-
-    console.info("[Telegram] Current album", {
-      album: selectedFolder,
-    });
+    const selectedFolder = await getSelectedFolder(chatId, userId);
+    console.info("[Telegram] Current album", { album: selectedFolder });
 
     if (!selectedFolder) {
       await sendTelegramText(
@@ -526,100 +657,21 @@ async function handleIncomingMedia(
       return;
     }
 
-    console.info(
-      "[Telegram] Reading GitHub metadata",
-    );
+    console.info("[Telegram] Creating metadata for batch queue");
+    const record = buildImageRecordFromMessage(message, selectedFolder);
+    console.info("[Telegram] Metadata queued", {
+      id: record.id,
+      filename: record.filename,
+      telegramFileUniqueId: record.telegramFileUniqueId,
+      telegramMessageId: record.telegramMessageId,
+      size: record.size,
+      mimeType: record.mimeType,
+      album: record.album,
+    });
 
-    const result = await appendTelegramRecord(
-      fileUniqueId,
-      () => {
-        console.info(
-          "[Telegram] Creating metadata",
-        );
-
-        const record =
-          buildImageRecordFromMessage(
-            message,
-            selectedFolder,
-          );
-
-        console.info(
-          "[Telegram] Metadata created",
-          {
-            id: record.id,
-            filename: record.filename,
-            telegramFileUniqueId:
-              record.telegramFileUniqueId,
-            telegramMessageId:
-              record.telegramMessageId,
-            size: record.size,
-            mimeType: record.mimeType,
-            album: record.album,
-          },
-        );
-
-        console.info(
-          "[GitHub] Updating metadata",
-        );
-
-        return record;
-      },
-      (existingCount, duplicate) => {
-        console.info(
-          "[Telegram] Existing metadata count",
-          {
-            count: existingCount,
-          },
-        );
-
-        console.info(
-          "[Telegram] Duplicate check",
-          {
-            duplicate,
-          },
-        );
-      },
-    );
-
-    console.info(
-      "[GitHub] appendTelegramRecord result",
-      {
-        added: result.added,
-        hasRecord: Boolean(result.record),
-      },
-    );
-
-    if (!result.added) {
-      await sendTelegramText(
-        chatId,
-        `⚠️ This image already exists in GitHub metadata.\n\n📁 Folder: ${selectedFolder}`,
-      );
-      return;
-    }
-
-    const record = result.record;
-
-    if (!record) {
-      throw new Error(
-        "GitHub metadata write succeeded without returning the record.",
-      );
-    }
-
-    console.info(
-      "[GitHub] Update successful",
-      {
-        id: record.id,
-        album: selectedFolder,
-      },
-    );
-
-    savedRecord = record;
-    savedFolder = selectedFolder;
+    queueTelegramMediaForBatch(chatId, userId, selectedFolder, record);
   } catch (error) {
-    logProcessingError(
-      "Image processing failed",
-      error,
-    );
+    logProcessingError("Image processing failed", error);
 
     try {
       await sendTelegramText(
@@ -627,36 +679,7 @@ async function handleIncomingMedia(
         "❌ Failed to save image metadata.\n\nPlease try again.",
       );
     } catch (notificationError) {
-      logProcessingError(
-        "Failed to send image processing failure notification",
-        notificationError,
-      );
-    }
-
-    return;
-  }
-
-  if (savedRecord && savedFolder) {
-    try {
-      await sendTelegramText(
-        chatId,
-        `✅ Image saved\n\n📁 Folder: ${savedFolder}\n🖼️ File: ${savedRecord.filename}`,
-      );
-
-      console.info(
-        "[Telegram] Image saved successfully",
-        {
-          fileUniqueId:
-            savedRecord.telegramFileUniqueId,
-          album: savedFolder,
-          filename: savedRecord.filename,
-        },
-      );
-    } catch (error) {
-      logProcessingError(
-        "Metadata saved but Telegram success notification failed",
-        error,
-      );
+      logProcessingError("Failed to send image processing failure notification", notificationError);
     }
   }
 }
