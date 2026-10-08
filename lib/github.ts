@@ -266,109 +266,41 @@ export async function appendRecords(records: ImageRecord[]) {
   }
 }
 
-export async function appendTelegramRecords(
-  records: ImageRecord[],
-  onDuplicateCheck?: (existingCount: number, duplicate: boolean, index?: number) => void,
-): Promise<{ saved: ImageRecord[]; duplicates: number; failed: number; existingCount: number }> {
-  if (!records.length) {
-    return { saved: [], duplicates: 0, failed: 0, existingCount: 0 };
-  }
-
-  const existingRecords = await readAllRecords(true);
-  const seenUniqueIds = new Set(
-    existingRecords
-      .map((record) => record.telegramFileUniqueId)
-      .filter((value): value is string => Boolean(value)),
-  );
-
-  const validRecords: ImageRecord[] = [];
-  let duplicates = 0;
-  let failed = 0;
-
-  for (const record of records) {
-    const fileUniqueId = record.telegramFileUniqueId;
-    if (!fileUniqueId) {
-      failed += 1;
-      continue;
-    }
-
-    if (seenUniqueIds.has(fileUniqueId)) {
-      duplicates += 1;
-      onDuplicateCheck?.(existingRecords.length, true);
-      continue;
-    }
-
-    seenUniqueIds.add(fileUniqueId);
-    validRecords.push(record);
-  }
-
-  if (!validRecords.length) {
-    return { saved: [], duplicates, failed, existingCount: existingRecords.length };
-  }
-
-  const shardGroups = new Map<number, ImageRecord[]>();
-  for (const record of validRecords) {
-    const shard = shardFor(record.id);
-    const group = shardGroups.get(shard) ?? [];
-    group.push(record);
-    shardGroups.set(shard, group);
-  }
-
-  const saved: ImageRecord[] = [];
-  for (const [shard, shardRecords] of shardGroups.entries()) {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const current = await readShard(shard, true);
-      const nextItems = [...current.items];
-      const seenInShard = new Set(
-        nextItems
-          .map((record) => record.telegramFileUniqueId)
-          .filter((value): value is string => Boolean(value)),
-      );
-
-      for (const record of shardRecords) {
-        if (seenInShard.has(record.telegramFileUniqueId ?? "")) {
-          continue;
-        }
-        nextItems.push(record);
-        seenInShard.add(record.telegramFileUniqueId ?? "");
-      }
-
-      try {
-        await writeShard(shard, nextItems, current.sha);
-        saved.push(...shardRecords);
-        break;
-      } catch (error) {
-        shardCache.delete(shard);
-        if (!isShaConflict(error) || attempt === 2) throw error;
-      }
-    }
-  }
-
-  return { saved, duplicates, failed, existingCount: existingRecords.length };
-}
-
 export async function appendTelegramRecord(
   fileUniqueId: string,
   createRecord: () => ImageRecord,
   onDuplicateCheck: (existingCount: number, duplicate: boolean) => void,
 ): Promise<{ added: boolean; existingCount: number; record?: ImageRecord }> {
   if (!fileUniqueId) throw new Error("Telegram file_unique_id is required.");
+  const existingRecords = await readAllRecords(true);
+  const duplicate = existingRecords.some((existing) => existing.telegramFileUniqueId === fileUniqueId);
+  onDuplicateCheck(existingRecords.length, duplicate);
+  if (duplicate) {
+    return { added: false, existingCount: existingRecords.length };
+  }
 
   const record = createRecord();
   if (record.telegramFileUniqueId !== fileUniqueId) {
     throw new Error("Telegram metadata file_unique_id does not match the duplicate-check key.");
   }
+  const shard = shardFor(record.id);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await readShard(shard, true);
+    if (current.items.some((existing) => existing.telegramFileUniqueId === fileUniqueId)) {
+      onDuplicateCheck(existingRecords.length, true);
+      return { added: false, existingCount: existingRecords.length };
+    }
 
-  const result = await appendTelegramRecords([record], (existingCount, duplicate) => {
-    onDuplicateCheck(existingCount, duplicate);
-  });
-
-  if (!result.saved.length) {
-    const existingRecords = await readAllRecords(true);
-    return { added: false, existingCount: existingRecords.length, record };
+    try {
+      await writeShard(shard, [...current.items, record], current.sha);
+      return { added: true, existingCount: existingRecords.length, record };
+    } catch (error) {
+      shardCache.delete(shard);
+      if (!isShaConflict(error) || attempt === 2) throw error;
+    }
   }
 
-  return { added: true, existingCount: result.existingCount, record: result.saved[0] };
+  throw new Error("GitHub metadata update exceeded retry limit.");
 }
 
 export async function readAllRecords(fresh = false) {
