@@ -27,7 +27,7 @@ export function ManageHeader({
   return (
     <header className="manage-toolbar">
       <div>
-        <p className="login-kicker">PRIVATE MEDIA VAULT</p>
+        <p className="login-kicker">PRIVATE MEDIA VAULTS</p>
         <h1>Thư viện hình ảnh & Video</h1>
       </div>
       <div className="manage-toolbar-actions">
