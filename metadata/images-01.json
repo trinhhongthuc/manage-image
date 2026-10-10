@@ -1859,5 +1859,27 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-10-10T02:44:18.837Z",
     "album": "Bi/SX"
+  },
+  {
+    "id": "img_9d19f511-656f-4b4f-8856-0a73b8583c81",
+    "filename": "1014-1_DC1PwHayDer.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwACnI5qyaclDW5nS-V-gPP9GXF9GghLEgACwCMAAjqvUFZKLZUAAVFvOFE9BA",
+    "telegramFileUniqueId": "AgADwCMAAjqvUFY",
+    "telegramMessageId": 40078,
+    "size": 637569,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-10T02:47:01.806Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_7ed11f5e-1478-40d1-bb17-a815a5846951",
+    "filename": "1014-3_DC1PwHayDer.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwACnI9qyacpVIbiBfjk0B6_vVunuBh4xQACwSMAAjqvUFZ9IRSgURIaNj0E",
+    "telegramFileUniqueId": "AgADwSMAAjqvUFY",
+    "telegramMessageId": 40079,
+    "size": 669729,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-10T02:47:05.287Z",
+    "album": "Bi/SX"
   }
 ]
