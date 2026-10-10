@@ -1672,5 +1672,18 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-10-10T02:29:25.378Z",
     "album": "Bi/SX"
+  },
+  {
+    "id": "img_98597bfc-eb4a-4e83-a1bb-0ef471269806",
+    "filename": "557-1_CUSJPkCJlJW.mp4",
+    "telegramFileId": "BAACAgUAAyEGAAMBBamymwACnCZqyaMwcMwiuc7RUIUwQ5XhVR7BHAACVyMAAjqvUFZCuGQMbn2TsD0E",
+    "telegramFileUniqueId": "AgADVyMAAjqvUFY",
+    "telegramMessageId": 39974,
+    "width": 720,
+    "height": 1280,
+    "size": 189495,
+    "mimeType": "video/mp4",
+    "createdAt": "2026-10-10T02:30:08.603Z",
+    "album": "Bi/SX"
   }
 ]
