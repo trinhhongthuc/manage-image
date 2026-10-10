@@ -1738,5 +1738,18 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-10-10T01:37:16.288Z",
     "album": "Bi/SX"
+  },
+  {
+    "id": "img_30dcbe4e-fe9c-4600-940c-3e623eba6037",
+    "filename": "414-1_CnMUDd7Irpi.mp4",
+    "telegramFileId": "BAACAgUAAyEGAAMBBamymwACmtRqyZcMNPN7xehzl4gwFyVIa2oHjwAC_iEAAjqvUFZYJcyaOXNWSj0E",
+    "telegramFileUniqueId": "AgAD_iEAAjqvUFY",
+    "telegramMessageId": 39636,
+    "width": 720,
+    "height": 1280,
+    "size": 6110448,
+    "mimeType": "video/mp4",
+    "createdAt": "2026-10-10T01:38:20.719Z",
+    "album": "Bi/SX"
   }
 ]
