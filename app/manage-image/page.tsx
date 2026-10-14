@@ -540,8 +540,8 @@ export default function ManageImagePage() {
     if (!pending.length || isUploading) return;
     setIsUploading(true);
 
-    // Gom 5 ảnh trong cùng 1 request HTTP (server sẽ xử lý giãn cách 900ms để chống rate limit của Telegram)
-    const BATCH_SIZE = isFastUpload ? pending.length : 5;
+    // Gom 10 ảnh trong cùng 1 request HTTP (server sẽ xử lý giãn cách 900ms để chống rate limit của Telegram)
+    const BATCH_SIZE = isFastUpload ? pending.length : 10;
     for (let i = 0; i < pending.length; i += BATCH_SIZE) {
       if (i > 0 && !isFastUpload) {
         // Nghỉ 1000ms giữa các batch request để Telegram hồi phục hạn mức burst
@@ -1685,7 +1685,7 @@ export default function ManageImagePage() {
                     gap: "6px",
                   }}
                 >
-                  <span>🛡️</span> Giữ nguyên 100% chất lượng gốc • Gom 5
+                  <span>🛡️</span> Giữ nguyên 100% chất lượng gốc • Gom 10
                   ảnh/request • Giãn cách 900ms chống Telegram Rate Limit (429)
                 </span>
               </div>
