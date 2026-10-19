@@ -44,6 +44,7 @@ export default function ManageImagePage() {
   const [isUploading, setIsUploading] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [isUploadingUrl, setIsUploadingUrl] = useState(false);
+  const [isStopRequested, setIsStopRequested] = useState(false);
   const [dragging, setDragging] = useState(false);
 
   // Filters
@@ -95,6 +96,7 @@ export default function ManageImagePage() {
   const [rotation, setRotation] = useState<number>(0);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
   const loadRequestRef = useRef(0);
+  const stopUploadRef = useRef(false);
   const filmstripContainerRef = useRef<HTMLDivElement | null>(null);
   const [isSlideshow, setIsSlideshow] = useState<boolean>(false);
   const [showFilmstrip, setShowFilmstrip] = useState<boolean>(true);
@@ -293,6 +295,7 @@ export default function ManageImagePage() {
       const response = await fetch(`/api/images?${params}`, {
         cache: "no-store",
       });
+      console.log('ressponse', response)
       if (response.status === 401) {
         window.location.href = "/";
         return;
@@ -535,17 +538,24 @@ export default function ManageImagePage() {
     }
   }
 
-  async function uploadAll(isFastUpload = false) {
-    const pending = uploads.filter((item) => item.status === "pending");
+  async function uploadAll(
+    isFastUpload = false,
+    selectedItems?: UploadItem[],
+  ) {
+    const pending =
+      selectedItems ?? uploads.filter((item) => item.status === "pending");
     if (!pending.length || isUploading) return;
+    stopUploadRef.current = false;
+    setIsStopRequested(false);
     setIsUploading(true);
 
     // Gom 10 ảnh trong cùng 1 request HTTP (server sẽ xử lý giãn cách 900ms để chống rate limit của Telegram)
     const BATCH_SIZE = isFastUpload ? pending.length : 10;
     for (let i = 0; i < pending.length; i += BATCH_SIZE) {
+      if (stopUploadRef.current) break;
       if (i > 0 && !isFastUpload) {
         // Nghỉ 1000ms giữa các batch request để Telegram hồi phục hạn mức burst
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 100));
       }
 
       const batch = pending.slice(i, i + BATCH_SIZE);
@@ -621,29 +631,35 @@ export default function ManageImagePage() {
       }
     }
 
+    const wasStopped = stopUploadRef.current;
+    stopUploadRef.current = false;
+    setIsStopRequested(false);
     setIsUploading(false);
     await load(1, limit);
 
-    // Tự động dọn dẹp các ảnh đã tải thành công khỏi modal
+    // Keep failed and not-yet-uploaded files available for retry or resume.
     setUploads((current) => {
-      const remainingFailed = current.filter(
-        (item) => item.status === "failed",
-      );
+      const remaining = current.filter((item) => item.status !== "success");
       const successful = current.filter((item) => item.status === "success");
       successful.forEach((item) => {
         if (item.preview) URL.revokeObjectURL(item.preview);
       });
 
-      if (remainingFailed.length === 0) {
+      if (remaining.length === 0) {
         setIsUploadModalOpen(false);
         showToast(
           "✓ Đã tải lên toàn bộ ảnh thành công với chất lượng gốc 100%!",
         );
         return [];
-      } else {
-        return remainingFailed;
       }
+      if (wasStopped) showToast("Đã dừng tải lên. Bạn có thể tiếp tục bất cứ lúc nào.");
+      return remaining;
     });
+  }
+
+  function stopUpload() {
+    stopUploadRef.current = true;
+    setIsStopRequested(true);
   }
 
   async function deleteSingleImage(image: ImageRecord) {
@@ -1809,6 +1825,21 @@ export default function ManageImagePage() {
                         {item.error}
                       </p>
                     )}
+                    {item.status === "failed" && (
+                      <button
+                        type="button"
+                        className="save-upload-button"
+                        onClick={() => uploadAll(false, [item])}
+                        disabled={isUploading}
+                        style={{
+                          marginTop: "8px",
+                          padding: "6px 10px",
+                          fontSize: "11px",
+                        }}
+                      >
+                        Tải lên lại
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1863,7 +1894,16 @@ export default function ManageImagePage() {
                 >
                   Đóng
                 </button>
-                {pendingCount > 0 ? (
+                {isUploading ? (
+                  <button
+                    type="button"
+                    className="cancel-upload-button"
+                    onClick={stopUpload}
+                    disabled={isStopRequested}
+                  >
+                    {isStopRequested ? "Đang dừng..." : "Dừng tải lên"}
+                  </button>
+                ) : pendingCount > 0 ? (
                   <div className="upload-start-actions">
                     <button
                       type="button"

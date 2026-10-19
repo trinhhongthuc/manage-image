@@ -110,8 +110,27 @@ async function readShard(index: number, fresh = false): Promise<{ items: ImageRe
   }
   if (!response.ok) throw new Error(`GitHub đọc metadata thất bại (${response.status}).`);
   const payload = (await response.json()) as { content: string; sha: string };
-  const content = Buffer.from(payload.content.replace(/\n/g, ""), "base64").toString("utf8");
-  const items = JSON.parse(content) as unknown;
+  let content = payload.content
+    ? Buffer.from(payload.content.replace(/\n/g, ""), "base64").toString("utf8")
+    : "";
+  if (!content) {
+    const rawResponse = await github(
+      `/repos/${owner}/${repo}/contents/${pathForShard(index)}?ref=${encodeURIComponent(branch)}`,
+      { headers: { Accept: "application/vnd.github.raw+json" } },
+    );
+    if (!rawResponse.ok) {
+      throw new Error(`GitHub đọc metadata thất bại (${rawResponse.status}).`);
+    }
+    content = await rawResponse.text();
+  }
+
+  let items: unknown;
+  try {
+    items = JSON.parse(content);
+  } catch (error) {
+    const reason = error instanceof Error ? `: ${error.message}` : "";
+    throw new Error(`Metadata ${pathForShard(index)} không phải JSON hợp lệ${reason}`);
+  }
   const result = { items: Array.isArray(items) ? (items as ImageRecord[]) : [], sha: payload.sha };
   shardCache.set(index, { data: result, expiresAt: Date.now() + 60 * 1000 });
   return result;
