@@ -29086,5 +29086,27 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-10-19T14:15:50.371Z",
     "album": "Bi/SX"
+  },
+  {
+    "id": "img_4b7ea21c-8560-49c1-a021-71c36be0f826",
+    "filename": "655556788_18087281033246263_196377626803888913_n.jpg",
+    "telegramFileId": "AgACAgUAAyEGAAMBBamymwABATaMatYr7EIDUbaqHb2xP17vVFJRntQAAvYVaxuPdrFWiYBEnW-I2DkBAAMCAAN3AAM9BA",
+    "telegramMessageId": 79508,
+    "url": "https://raw.githubusercontent.com/trinhhongthuc/manage-image/main/news/1792421689456_f88722c6_655556788_18087281033246263_196377626803888913_n.jpg",
+    "size": 1111499,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-19T14:55:15.733Z",
+    "album": "news"
+  },
+  {
+    "id": "img_ff89b891-f4e5-4c22-851b-91f5b11f8a16",
+    "filename": "655887646_18130505503539785_8730424200592755638_n.jpg",
+    "telegramFileId": "AgACAgUAAyEGAAMBBamymwABATaNatYr8t61mRHOSTBtnNVDxmAUmdQAAvcVaxuPdrFWqhRSIl1drEsBAAMCAAN3AAM9BA",
+    "telegramMessageId": 79509,
+    "url": "https://raw.githubusercontent.com/trinhhongthuc/manage-image/main/news/1792421689487_d4cd3fe6_655887646_18130505503539785_8730424200592755638_n.jpg",
+    "size": 511436,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-19T14:55:15.734Z",
+    "album": "news"
   }
 ]
