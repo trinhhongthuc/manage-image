@@ -26,6 +26,8 @@ type UploadItem = {
   preview: string;
   status: "pending" | "uploading" | "success" | "failed";
   error?: string;
+  orphanedTelegramCleanupTokens?: string[];
+  retryBlocked?: boolean;
 };
 
 function formatSize(size: number) {
@@ -42,6 +44,9 @@ export default function ManageImagePage() {
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isStopRequested, setIsStopRequested] = useState(false);
+  const uploadInProgressRef = useRef(false);
+  const stopUploadRef = useRef(false);
   const [urlInput, setUrlInput] = useState("");
   const [isUploadingUrl, setIsUploadingUrl] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -535,115 +540,220 @@ export default function ManageImagePage() {
     }
   }
 
-  async function uploadAll(isFastUpload = false) {
-    const pending = uploads.filter((item) => item.status === "pending");
-    if (!pending.length || isUploading) return;
+  async function uploadItems(items: UploadItem[], isFastUpload = false) {
+    if (!items.length || uploadInProgressRef.current) return;
+    uploadInProgressRef.current = true;
+    stopUploadRef.current = false;
     setIsUploading(true);
+    setIsStopRequested(false);
 
-    // Gom 10 ảnh trong cùng 1 request HTTP (server sẽ xử lý giãn cách 900ms để chống rate limit của Telegram)
-    const BATCH_SIZE = isFastUpload ? pending.length : 10;
-    for (let i = 0; i < pending.length; i += BATCH_SIZE) {
-      if (i > 0 && !isFastUpload) {
-        // Nghỉ 1000ms giữa các batch request để Telegram hồi phục hạn mức burst
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-
-      const batch = pending.slice(i, i + BATCH_SIZE);
-      const batchIds = new Set(batch.map((b) => b.id));
-
-      setUploads((current) =>
-        current.map((item): UploadItem =>
-          batchIds.has(item.id)
-            ? { ...item, status: "uploading", error: undefined }
-            : item,
-        ),
-      );
-
-      const form = new FormData();
-      if (currentFolder) form.append("album", currentFolder);
-      if (isFastUpload) form.append("fast", "true");
-      for (const item of batch) {
-        // Giữ nguyên 100% chất lượng ảnh gốc, không nén
-        form.append("files", item.file);
-      }
-
-      try {
-        const response = await fetch("/api/images", {
-          method: "POST",
-          body: form,
-        });
-        const result = await response.json();
-
-        if (!response.ok) {
-          const serverErr =
-            result.error ?? `Upload thất bại (${response.status})`;
-          setUploads((current) =>
-            current.map((item): UploadItem =>
-              batchIds.has(item.id)
-                ? { ...item, status: "failed", error: serverErr }
-                : item,
-            ),
-          );
-        } else {
-          const failedMap = new Map(
-            (result.errors ?? []).map(
-              (err: { filename: string; error: string }) => [
-                err.filename,
-                err.error,
-              ],
-            ),
-          );
-
-          setUploads((current: UploadItem[]) =>
-            current.map((item): UploadItem => {
-              if (!batchIds.has(item.id)) return item;
-              if (failedMap.has(item.file.name)) {
-                return {
-                  ...item,
-                  status: "failed",
-                  error: String(failedMap.get(item.file.name) || "Lỗi upload"),
-                };
-              }
-              return { ...item, status: "success", error: undefined };
-            }),
-          );
+    try {
+      // Gom 10 ảnh trong cùng 1 request HTTP (server sẽ xử lý giãn cách 900ms để chống rate limit của Telegram)
+      const BATCH_SIZE = isFastUpload ? items.length : 10;
+      for (let i = 0; i < items.length; i += BATCH_SIZE) {
+        if (stopUploadRef.current) break;
+        if (i > 0 && !isFastUpload) {
+          // Nghỉ 1000ms giữa các batch request để Telegram hồi phục hạn mức burst
+          await new Promise((r) => setTimeout(r, 1000));
+          if (stopUploadRef.current) break;
         }
-      } catch (reason) {
-        const networkErr =
-          reason instanceof Error ? reason.message : "Lỗi kết nối mạng";
+
+        const batch = items.slice(i, i + BATCH_SIZE);
+        const batchIds = new Set(batch.map((b) => b.id));
+
         setUploads((current) =>
           current.map((item): UploadItem =>
             batchIds.has(item.id)
-              ? { ...item, status: "failed", error: networkErr }
+              ? { ...item, status: "uploading", error: undefined }
               : item,
           ),
         );
-      }
-    }
 
-    setIsUploading(false);
-    await load(1, limit);
-
-    // Tự động dọn dẹp các ảnh đã tải thành công khỏi modal
-    setUploads((current) => {
-      const remainingFailed = current.filter(
-        (item) => item.status === "failed",
-      );
-      const successful = current.filter((item) => item.status === "success");
-      successful.forEach((item) => {
-        if (item.preview) URL.revokeObjectURL(item.preview);
-      });
-
-      if (remainingFailed.length === 0) {
-        setIsUploadModalOpen(false);
-        showToast(
-          "✓ Đã tải lên toàn bộ ảnh thành công với chất lượng gốc 100%!",
+        const form = new FormData();
+        if (currentFolder) form.append("album", currentFolder);
+        if (isFastUpload) form.append("fast", "true");
+        for (const item of batch) {
+          // Giữ nguyên 100% chất lượng ảnh gốc, không nén
+          form.append("files", item.file);
+          form.append("uploadIds", item.id);
+        }
+        const cleanupMessages = batch.flatMap((item) =>
+          (item.orphanedTelegramCleanupTokens ?? []).map((token) => ({
+            uploadId: item.id,
+            token,
+          })),
         );
-        return [];
-      } else {
-        return remainingFailed;
+        if (cleanupMessages.length) {
+          form.append("cleanupTelegramMessages", JSON.stringify(cleanupMessages));
+        }
+
+        try {
+          const response = await fetch("/api/images", {
+            method: "POST",
+            body: form,
+          });
+          const result = (await response.json()) as {
+            error?: string;
+            errors?: Array<{ filename: string; error: string }>;
+            orphaned?: Array<{
+              uploadId?: string;
+              filename: string;
+              cleanupToken: string;
+            }>;
+            savedUploadIds?: string[];
+            unverifiedUploadIds?: string[];
+            cleanedUp?: Array<{ uploadId: string; token: string }>;
+          };
+          const cleanedUpByUploadId = new Map<string, Set<string>>();
+          for (const message of result.cleanedUp ?? []) {
+            const cleaned =
+              cleanedUpByUploadId.get(message.uploadId) ?? new Set<string>();
+            cleaned.add(message.token);
+            cleanedUpByUploadId.set(message.uploadId, cleaned);
+          }
+          const orphanedByUploadId = new Map<string, string[]>();
+          for (const orphaned of result.orphaned ?? []) {
+            if (!orphaned.uploadId) continue;
+            const ids = orphanedByUploadId.get(orphaned.uploadId) ?? [];
+            ids.push(orphaned.cleanupToken);
+            orphanedByUploadId.set(orphaned.uploadId, ids);
+          }
+          const savedUploadIds = new Set(result.savedUploadIds ?? []);
+          const unverifiedUploadIds = new Set(result.unverifiedUploadIds ?? []);
+
+          if (!response.ok) {
+            const serverErr =
+              result.error ?? `Upload thất bại (${response.status})`;
+            setUploads((current) =>
+              current.map((item): UploadItem =>
+                batchIds.has(item.id)
+                  ? savedUploadIds.has(item.id)
+                    ? {
+                        ...item,
+                        status: "success",
+                        error: undefined,
+                        orphanedTelegramCleanupTokens: [],
+                        retryBlocked: false,
+                      }
+                    : {
+                        ...item,
+                        status: "failed",
+                        error: serverErr,
+                        retryBlocked: unverifiedUploadIds.has(item.id),
+                        orphanedTelegramCleanupTokens: [
+                          ...(item.orphanedTelegramCleanupTokens ?? []).filter(
+                            (token) =>
+                              !cleanedUpByUploadId.get(item.id)?.has(token),
+                          ),
+                          ...(orphanedByUploadId.get(item.id) ?? []),
+                        ],
+                      }
+                  : item,
+              ),
+            );
+          } else {
+            const failedMap = new Map(
+              (result.errors ?? []).map(
+                (err: { filename: string; error: string }) => [
+                  err.filename,
+                  err.error,
+                ],
+              ),
+            );
+
+            setUploads((current: UploadItem[]) =>
+              current.map((item): UploadItem => {
+                if (!batchIds.has(item.id)) return item;
+                if (failedMap.has(item.file.name)) {
+                  return {
+                    ...item,
+                    status: "failed",
+                    error: String(failedMap.get(item.file.name) || "Lỗi upload"),
+                    orphanedTelegramCleanupTokens: (
+                      item.orphanedTelegramCleanupTokens ?? []
+                    ).filter(
+                      (token) => !cleanedUpByUploadId.get(item.id)?.has(token),
+                    ),
+                  };
+                }
+                return {
+                  ...item,
+                  status: "success",
+                  error: undefined,
+                  orphanedTelegramCleanupTokens: [],
+                };
+              }),
+            );
+          }
+        } catch (reason) {
+          const networkErr =
+            reason instanceof Error ? reason.message : "Lỗi kết nối mạng";
+          setUploads((current) =>
+            current.map((item): UploadItem =>
+              batchIds.has(item.id)
+                ? { ...item, status: "failed", error: networkErr }
+                : item,
+            ),
+          );
+        }
       }
-    });
+      await load(1, limit).catch((reason) =>
+        setError(
+          reason instanceof Error ? reason.message : "Không thể tải gallery.",
+        ),
+      );
+
+      // Tự động dọn dẹp các ảnh đã tải thành công khỏi modal
+      setUploads((current) => {
+        const successful = current.filter((item) => item.status === "success");
+        successful.forEach((item) => {
+          if (item.preview) URL.revokeObjectURL(item.preview);
+        });
+        const remaining = current.filter((item) => item.status !== "success");
+
+        if (remaining.length === 0) {
+          setIsUploadModalOpen(false);
+          showToast(
+            "✓ Đã tải lên toàn bộ ảnh thành công với chất lượng gốc 100%!",
+          );
+          return [];
+        }
+        return remaining;
+      });
+    } finally {
+      uploadInProgressRef.current = false;
+      setIsUploading(false);
+      setIsStopRequested(false);
+    }
+  }
+
+  function uploadAll(isFastUpload = false) {
+    const pending = uploads.filter((item) => item.status === "pending");
+    void uploadItems(pending, isFastUpload);
+  }
+
+  function retryFailedUploads() {
+    if (uploadInProgressRef.current) return;
+    const failed = uploads.filter(
+      (item) => item.status === "failed" && !item.retryBlocked,
+    );
+    if (!failed.length) return;
+    setUploads((current) =>
+      current.map((upload) =>
+        upload.status === "failed" && !upload.retryBlocked
+          ? { ...upload, status: "pending", error: undefined }
+          : upload,
+      ),
+    );
+    void uploadItems(
+      failed.map((item) => ({ ...item, status: "pending", error: undefined })),
+    );
+  }
+
+  function stopUpload() {
+    if (!uploadInProgressRef.current) return;
+    stopUploadRef.current = true;
+    setIsStopRequested(true);
   }
 
   async function deleteSingleImage(image: ImageRecord) {
@@ -826,6 +936,10 @@ export default function ManageImagePage() {
   const uploadingCount = uploads.filter((u) => u.status === "uploading").length;
   const successCount = uploads.filter((u) => u.status === "success").length;
   const failedCount = uploads.filter((u) => u.status === "failed").length;
+  const retryableFailedCount = uploads.filter(
+    (u) => u.status === "failed" && !u.retryBlocked,
+  ).length;
+  const retryBlockedCount = failedCount - retryableFailedCount;
   const totalUploadSize = uploads.reduce((acc, cur) => acc + cur.file.size, 0);
   const progressPercent = uploads.length
     ? Math.round(((successCount + failedCount) / uploads.length) * 100)
@@ -1753,6 +1867,13 @@ export default function ManageImagePage() {
                   </span>
                 )}
               </div>
+              {retryBlockedCount > 0 && (
+                <p className="upload-card-error" role="alert">
+                  {retryBlockedCount} ảnh chưa xác minh được trạng thái metadata
+                  trên GitHub. Hãy kiểm tra thư viện trước khi tải lại để tránh
+                  tạo ảnh trùng.
+                </p>
+              )}
               {isUploading && (
                 <div className="progress-container">
                   <div
@@ -1863,27 +1984,53 @@ export default function ManageImagePage() {
                 >
                   Đóng
                 </button>
-                {pendingCount > 0 ? (
+                {isUploading ? (
                   <div className="upload-start-actions">
+                    {isStopRequested && (
+                      <span role="status">
+                        Đang dừng sau nhóm hiện tại...
+                      </span>
+                    )}
                     <button
                       type="button"
-                      className="save-upload-button"
-                      onClick={() => uploadAll(false)}
-                      disabled={isUploading}
+                      className="cancel-upload-button"
+                      onClick={stopUpload}
+                      disabled={isStopRequested}
+                      title="Dừng sau khi nhóm đang tải hoàn tất; ảnh còn chờ sẽ được giữ lại để tiếp tục."
                     >
-                      {isUploading
-                        ? "Đang tải lên..."
-                        : `Bắt đầu tải lên (${pendingCount})`}
+                      {isStopRequested ? "Đang dừng..." : "Dừng tải lên"}
                     </button>
-                    <button
-                      type="button"
-                      className="fast-upload-button"
-                      onClick={() => uploadAll(true)}
-                      disabled={isUploading}
-                      title="Gửi nhanh, không chờ 900ms giữa các ảnh. Telegram có thể trả lỗi 409."
-                    >
-                      Tải nhanh
-                    </button>
+                  </div>
+                ) : pendingCount > 0 || retryableFailedCount > 0 ? (
+                  <div className="upload-start-actions">
+                    {pendingCount > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          className="save-upload-button"
+                          onClick={() => uploadAll(false)}
+                        >
+                          {`Bắt đầu tải lên (${pendingCount})`}
+                        </button>
+                        <button
+                          type="button"
+                          className="fast-upload-button"
+                          onClick={() => uploadAll(true)}
+                          title="Gửi nhanh, không chờ 900ms giữa các ảnh. Telegram có thể trả lỗi 409."
+                        >
+                          Tải nhanh
+                        </button>
+                      </>
+                    )}
+                    {retryableFailedCount > 0 && (
+                      <button
+                        type="button"
+                        className="save-upload-button"
+                        onClick={retryFailedUploads}
+                      >
+                        Tải lên lại tất cả ({retryableFailedCount})
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <button

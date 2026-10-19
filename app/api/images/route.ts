@@ -1,6 +1,13 @@
 import { isAdminAuthenticated } from "@/lib/auth";
 import { appendRecords, readAllRecords, removeRecord, updateRecord } from "@/lib/github";
-import { deleteTelegramMessage, recordFromTelegram, sleep, uploadToTelegram } from "@/lib/telegram";
+import {
+  createTelegramCleanupToken,
+  deleteTelegramMessage,
+  deleteTelegramMessageWithCleanupToken,
+  recordFromTelegram,
+  sleep,
+  uploadToTelegram,
+} from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -8,6 +15,21 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 function jsonError(message: string, status = 500) {
   return Response.json({ error: message }, { status });
+}
+
+type TelegramCleanupMessage = { uploadId: string; token: string };
+
+function isTelegramCleanupMessage(
+  value: unknown,
+): value is TelegramCleanupMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const message = value as { uploadId?: unknown; token?: unknown };
+  return (
+    typeof message.uploadId === "string" &&
+    typeof message.token === "string" &&
+    message.token.length > 0 &&
+    message.token.length <= 4096
+  );
 }
 
 function sortRecords(items: Awaited<ReturnType<typeof readAllRecords>>, sort: string) {
@@ -161,9 +183,70 @@ export async function POST(request: Request) {
   }
   if (files.some((file) => file.size > MAX_FILE_SIZE)) return jsonError("Mỗi file tối đa 50 MB.", 413);
 
+  const uploadIdEntries = form.getAll("uploadIds");
+  if (
+    uploadIdEntries.length > 0 &&
+    (uploadIdEntries.length !== files.length ||
+      uploadIdEntries.some((id) => typeof id !== "string" || !id))
+  ) {
+    return jsonError("Danh sách upload ID không hợp lệ.", 400);
+  }
+  const uploadIds = uploadIdEntries.filter(
+    (id): id is string => typeof id === "string",
+  );
+
+  let messagesToCleanup: TelegramCleanupMessage[] = [];
+  const cleanupInput = form.get("cleanupTelegramMessages");
+  if (cleanupInput !== null) {
+    if (typeof cleanupInput !== "string") {
+      return jsonError("Danh sách Telegram cần dọn không hợp lệ.", 400);
+    }
+    try {
+      const parsed = JSON.parse(cleanupInput) as unknown;
+      if (!Array.isArray(parsed) || !parsed.every(isTelegramCleanupMessage)) {
+        return jsonError("Danh sách Telegram cần dọn không hợp lệ.", 400);
+      }
+      messagesToCleanup = parsed.filter(isTelegramCleanupMessage);
+    } catch {
+      return jsonError("Danh sách Telegram cần dọn không hợp lệ.", 400);
+    }
+  }
+
+  const cleanedUp: TelegramCleanupMessage[] = [];
+  const cleanupErrors: Array<{
+    uploadId: string;
+    token: string;
+    error: string;
+  }> = [];
+  for (const message of messagesToCleanup) {
+    try {
+      await deleteTelegramMessageWithCleanupToken(
+        message.token,
+        message.uploadId,
+      );
+      cleanedUp.push(message);
+    } catch (error) {
+      cleanupErrors.push({
+        ...message,
+        error: error instanceof Error ? error.message : "Không thể xóa ảnh cũ trên Telegram.",
+      });
+    }
+  }
+  if (cleanupErrors.length) {
+    return Response.json(
+      {
+        error: "Không thể dọn ảnh cũ trên Telegram; chưa bắt đầu tải ảnh mới.",
+        cleanedUp,
+        cleanupErrors,
+      },
+      { status: 502 },
+    );
+  }
+
   // Process files sequentially with 900ms delay to respect Telegram's 1 msg/sec per-chat rate limit
   const DELAY_BETWEEN_FILES_MS = isFastUpload ? 0 : 900;
   const records = [];
+  const recordUploadIds: string[] = [];
   const errors: Array<{ filename: string; error: string }> = [];
 
   for (let i = 0; i < files.length; i++) {
@@ -177,6 +260,7 @@ export async function POST(request: Request) {
         ...recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram }),
         ...(album ? { album } : {}),
       });
+      recordUploadIds.push(uploadIds[i] ?? "");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Upload thất bại.";
       console.error(`[Upload Error] File "${file.name}":`, msg);
@@ -192,9 +276,48 @@ export async function POST(request: Request) {
       await appendRecords(records);
     } catch (error) {
       console.error("[GitHub Shard Error]:", error);
-      return jsonError(
-        `Telegram đã nhận ảnh nhưng GitHub chưa lưu metadata: ${error instanceof Error ? error.message : "lỗi không xác định"}`,
-        502
+      let savedIds = new Set<string>();
+      let verificationError: string | undefined;
+      try {
+        const persistedRecords = await readAllRecords(true);
+        savedIds = new Set(persistedRecords.map((record) => record.id));
+      } catch (verificationFailure) {
+        verificationError =
+          verificationFailure instanceof Error
+            ? verificationFailure.message
+            : "Không thể xác minh metadata trên GitHub.";
+      }
+      return Response.json(
+        {
+          error: verificationError
+            ? `Không thể xác minh metadata trên GitHub sau lỗi lưu: ${verificationError}`
+            : `Telegram đã nhận ảnh nhưng GitHub chưa lưu metadata: ${error instanceof Error ? error.message : "lỗi không xác định"}`,
+          savedUploadIds: recordUploadIds.filter(
+            (uploadId, index) =>
+              uploadId !== "" && savedIds.has(records[index].id),
+          ),
+          unverifiedUploadIds: verificationError
+            ? recordUploadIds.filter(Boolean)
+            : [],
+          orphaned: verificationError
+            ? []
+            : records.flatMap((record, index) =>
+                savedIds.has(record.id)
+                  ? []
+                  : [
+                      {
+                        uploadId: recordUploadIds[index] || record.id,
+                        filename: record.filename,
+                        cleanupToken: createTelegramCleanupToken(
+                          recordUploadIds[index] || record.id,
+                          record.telegramMessageId,
+                        ),
+                      },
+                    ],
+              ),
+          cleanedUp,
+        },
+        { status: 502 },
       );
     }
   }
@@ -205,6 +328,7 @@ export async function POST(request: Request) {
       items: records,
       errors,
       error: isCompleteFailure ? errors[0]?.error || "Upload thất bại." : undefined,
+      cleanedUp,
     },
     { status: isCompleteFailure ? 502 : 200 }
   );
