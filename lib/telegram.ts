@@ -1,5 +1,4 @@
 import type { ImageRecord } from "@/lib/types";
-import { createHmac, timingSafeEqual } from "node:crypto";
 
 const apiBase = () => `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
@@ -10,12 +9,6 @@ function requireConfig() {
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chatId) throw new Error("Thiếu cấu hình Telegram.");
   return { chatId };
-}
-
-function requireBotToken() {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) throw new Error("Thiếu cấu hình Telegram.");
-  return token;
 }
 
 type TelegramResponse<T> = {
@@ -111,88 +104,11 @@ export async function uploadToTelegram(file: File) {
 
 export async function deleteTelegramMessage(messageId: number) {
   const { chatId } = requireConfig();
-  const deleted = await telegramRequest<boolean>("deleteMessage", {
+  await telegramRequest<boolean>("deleteMessage", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
   });
-  if (!deleted) throw new Error("Telegram không xác nhận đã xóa ảnh cũ.");
-}
-
-export function createTelegramCleanupToken(uploadId: string, messageId: number) {
-  const encodedPayload = Buffer.from(
-    JSON.stringify({ uploadId, messageId }),
-  ).toString("base64url");
-  const signature = createHmac(
-    "sha256",
-    requireBotToken(),
-  )
-    .update(encodedPayload)
-    .digest("base64url");
-  return `${encodedPayload}.${signature}`;
-}
-
-export async function deleteTelegramMessageWithCleanupToken(
-  token: string,
-  expectedUploadId: string,
-) {
-  const [encodedPayload, signature, ...extraParts] = token.split(".");
-  if (
-    token.length > 4096 ||
-    !encodedPayload ||
-    !signature ||
-    extraParts.length
-  ) {
-    throw new Error("Mã dọn ảnh Telegram không hợp lệ.");
-  }
-
-  const expectedSignature = createHmac(
-    "sha256",
-    requireBotToken(),
-  )
-    .update(encodedPayload)
-    .digest("base64url");
-  const providedBytes = Buffer.from(signature);
-  const expectedBytes = Buffer.from(expectedSignature);
-  if (
-    providedBytes.length !== expectedBytes.length ||
-    !timingSafeEqual(providedBytes, expectedBytes)
-  ) {
-    throw new Error("Mã dọn ảnh Telegram không hợp lệ.");
-  }
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(
-      Buffer.from(encodedPayload, "base64url").toString("utf8"),
-    ) as unknown;
-  } catch {
-    throw new Error("Mã dọn ảnh Telegram không hợp lệ.");
-  }
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    !("uploadId" in payload) ||
-    payload.uploadId !== expectedUploadId ||
-    !("messageId" in payload) ||
-    typeof payload.messageId !== "number" ||
-    !Number.isSafeInteger(payload.messageId) ||
-    payload.messageId <= 0
-  ) {
-    throw new Error("Mã dọn ảnh Telegram không hợp lệ.");
-  }
-
-  try {
-    await deleteTelegramMessage(payload.messageId);
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      /message to delete not found/i.test(error.message)
-    ) {
-      return;
-    }
-    throw error;
-  }
 }
 
 const filePathCache = new Map<string, { url: string; expiresAt: number }>();
