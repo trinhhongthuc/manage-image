@@ -427,5 +427,15 @@
     "mimeType": "image/png",
     "createdAt": "2026-10-21T13:02:33.766Z",
     "album": "news"
+  },
+  {
+    "id": "img_25bed430-b1f8-4ed0-80a2-cdf7771f0d3d",
+    "filename": "1.png",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABATmzati_qpAnfJ4X3xAGw8ysJ7pSMq4AAqMkAALJXMlWY91XJkpaYWc9BA",
+    "telegramFileUniqueId": "AgADoyQAAslcyVY",
+    "telegramMessageId": 80307,
+    "size": 323646,
+    "mimeType": "image/png",
+    "createdAt": "2026-10-21T13:35:38.254Z"
   }
 ]
