@@ -1,13 +1,62 @@
 import { isAdminAuthenticated } from "@/lib/auth";
-import { appendRecords, readAllRecords, removeRecord, updateRecord } from "@/lib/github";
-import { deleteTelegramMessage, recordFromTelegram, sleep, uploadToTelegram } from "@/lib/telegram";
+import {
+  appendRecords,
+  readAllRecords,
+  removeRecord,
+  updateRecord,
+} from "@/lib/github";
+import { uploadToImageServer, uploadBulkToImageServer } from "@/lib/image-upload";
+import {
+  deleteTelegramMessage,
+  recordFromTelegram,
+  sleep,
+  uploadToTelegram,
+} from "@/lib/telegram";
+import type { ImageRecord } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const imageMetadataApiUrl =
+  process.env.IMAGE_METADATA_API_URL ??
+  "https://manage-image-be.onrender.com/upload";
 
 function jsonError(message: string, status = 500) {
   return Response.json({ error: message }, { status });
+}
+
+function isImageRecord(value: unknown): value is ImageRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.id === "string" &&
+    record.id.trim().length > 0 &&
+    typeof record.filename === "string" &&
+    record.filename.trim().length > 0 &&
+    typeof record.telegramFileId === "string" &&
+    record.telegramFileId.trim().length > 0 &&
+    typeof record.telegramFileUniqueId === "string" &&
+    record.telegramFileUniqueId.trim().length > 0 &&
+    typeof record.telegramMessageId === "number" &&
+    Number.isInteger(record.telegramMessageId) &&
+    record.telegramMessageId > 0 &&
+    typeof record.size === "number" &&
+    Number.isFinite(record.size) &&
+    record.size >= 0 &&
+    typeof record.mimeType === "string" &&
+    record.mimeType.trim().length > 0 &&
+    typeof record.createdAt === "string" &&
+    Number.isFinite(Date.parse(record.createdAt)) &&
+    (record.album === undefined || typeof record.album === "string") &&
+    (record.url === undefined || typeof record.url === "string") &&
+    (record.width === undefined ||
+      (typeof record.width === "number" && Number.isFinite(record.width))) &&
+    (record.height === undefined ||
+      (typeof record.height === "number" && Number.isFinite(record.height))) &&
+    (record.tags === undefined ||
+      (Array.isArray(record.tags) &&
+        record.tags.every((tag) => typeof tag === "string")))
+  );
 }
 
 function sortRecords(items: Awaited<ReturnType<typeof readAllRecords>>, sort: string) {
@@ -91,6 +140,211 @@ export async function PATCH(request: Request) {
 export async function POST(request: Request) {
   if (!(await isAdminAuthenticated())) return jsonError("Chưa đăng nhập.", 401);
 
+  const operation = new URL(request.url).searchParams.get("operation");
+  if (operation === "upload-telegram") {
+    const form = await request.formData();
+    const files = form
+      .getAll("files")
+      .filter((value): value is File => value instanceof File);
+    const uploadIds = form
+      .getAll("uploadIds")
+      .filter((value): value is string => typeof value === "string");
+    const album = String(form.get("album") ?? "").trim();
+
+    if (!files.length) return jsonError("Không có file.", 400);
+    if (files.length > 20) return jsonError("Mỗi request tối đa 20 file.", 400);
+    if (
+      uploadIds.length !== files.length ||
+      uploadIds.some((id) => !id.trim()) ||
+      new Set(uploadIds).size !== uploadIds.length
+    ) {
+      return jsonError("Danh sách uploadIds không hợp lệ.", 400);
+    }
+    if (
+      files.some(
+        (file) => !file.type.startsWith("image/") && !file.type.startsWith("video/"),
+      )
+    ) {
+      return jsonError("Chỉ chấp nhận file ảnh hoặc video.", 400);
+    }
+    if (files.some((file) => file.size > MAX_FILE_SIZE)) {
+      return jsonError("Mỗi file tối đa 50 MB.", 413);
+    }
+
+    const items: Array<{ uploadId: string; record: ImageRecord }> = [];
+    const errors: Array<{ uploadId: string; filename: string; error: string }> = [];
+
+    for (let i = 0; i < files.length; i++) {
+      if (i > 0) await sleep(900);
+      const file = files[i];
+      const uploadId = uploadIds[i];
+
+      try {
+        const telegram = await uploadToTelegram(file);
+        const record = recordFromTelegram({
+          id: `img_${crypto.randomUUID()}`,
+          file,
+          ...telegram,
+        });
+        items.push({
+          uploadId,
+          record: {
+            ...record,
+            ...(album ? { album } : {}),
+          },
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Upload thất bại.";
+        console.error(`[Upload Error] File "${file.name}":`, message);
+        errors.push({ uploadId, filename: file.name, error: message });
+      }
+    }
+
+    return Response.json({ items, errors });
+  }
+
+  if (operation === "save-metadata") {
+    let body: { items?: unknown };
+    try {
+      body = (await request.json()) as { items?: unknown };
+    } catch {
+      return jsonError("Metadata không phải JSON hợp lệ.", 400);
+    }
+    if (
+      !Array.isArray(body.items) ||
+      body.items.length === 0 ||
+      body.items.length > 20 ||
+      !body.items.every(isImageRecord)
+    ) {
+      return jsonError("Danh sách metadata không hợp lệ (yêu cầu 1-20 ảnh).", 400);
+    }
+
+    const records: ImageRecord[] = body.items.map((value) => {
+      const record = value as Record<string, unknown>;
+      return {
+        id: record.id as string,
+        filename: record.filename as string,
+        telegramFileId: record.telegramFileId as string,
+        telegramFileUniqueId: record.telegramFileUniqueId as string,
+        telegramMessageId: record.telegramMessageId as number,
+        size: record.size as number,
+        mimeType: record.mimeType as string,
+        createdAt: record.createdAt as string,
+        album: "news",
+        // ...(typeof record.album === "string" ? { album: 'news' } : {album: 'news'}),
+        ...(typeof record.url === "string" ? { url: record.url } : {}),
+        ...(typeof record.width === "number" ? { width: record.width } : {}),
+        ...(typeof record.height === "number" ? { height: record.height } : {}),
+        ...(Array.isArray(record.tags) ? { tags: record.tags as string[] } : {}),
+      };
+    });
+
+    const requestId = crypto.randomUUID();
+    try {
+      console.info("[Metadata Server] Forwarding metadata", {
+        requestId,
+        endpoint: imageMetadataApiUrl,
+        itemCount: records.length,
+      });
+
+      const response = await fetch(imageMetadataApiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: records }),
+        cache: "no-store",
+      });
+      console.info("[Metadata Server] Response received", {
+        requestId,
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+      });
+
+      const responseText = await response.text();
+      let result: unknown;
+      try {
+        result = JSON.parse(responseText);
+      } catch {
+        if (!response.ok) {
+          console.error("[Metadata Server Error] Non-JSON error response", {
+            requestId,
+            status: response.status,
+          });
+          return Response.json(
+            {
+              error: `Metadata server thất bại (${response.status}).`,
+              upstreamStatus: response.status,
+              requestId,
+            },
+            { status: 502 },
+          );
+        }
+        result = undefined;
+      }
+
+      if (!response.ok) {
+        const message =
+          result &&
+          typeof result === "object" &&
+          "error" in result &&
+          typeof result.error === "string"
+            ? result.error
+            : result &&
+                typeof result === "object" &&
+                "message" in result &&
+                typeof result.message === "string"
+              ? result.message
+            : `Metadata server thất bại (${response.status}).`;
+        console.error("[Metadata Server Error]", { requestId, message });
+        return Response.json(
+          { error: message, upstreamStatus: response.status, requestId },
+          { status: 502 },
+        );
+      }
+
+      if (
+        result &&
+        typeof result === "object" &&
+        "ok" in result &&
+        result.ok === false
+      ) {
+        console.error(
+          "[Metadata Server Error] Server returned ok:false with successful HTTP status",
+          { requestId, upstreamStatus: response.status },
+        );
+        return Response.json(
+          {
+            error: "Metadata server báo lưu metadata thất bại.",
+            upstreamStatus: response.status,
+            requestId,
+          },
+          { status: 502 },
+        );
+      }
+
+      return Response.json({
+        ok: true,
+        items: records,
+        upstreamStatus: response.status,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "lỗi không xác định";
+      console.error("[Metadata Server] Request failed before receiving response", {
+        requestId,
+        endpoint: imageMetadataApiUrl,
+        message,
+      });
+      return Response.json(
+        {
+          error: `Không thể kết nối metadata server: ${message}`,
+          requestId,
+        },
+        { status: 502 },
+      );
+    }
+  }
+
   const contentType = request.headers.get("content-type") || "";
 
   // 1. Upload via image URL
@@ -137,11 +391,9 @@ export async function POST(request: Request) {
       }
 
       const file = new File([arrayBuf], filename, { type: mimeType });
-      const telegram = await uploadToTelegram(file);
-      const record = {
-        ...recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram }),
-        ...(typeof body.album === "string" && body.album.trim() ? { album: body.album.trim() } : {}),
-      };
+      const album =
+        typeof body.album === "string" ? body.album.trim() : undefined;
+      const record = await uploadToImageServer(file, album);
 
       await appendRecords([record]);
       return Response.json({ items: [record], errors: [] });
@@ -153,7 +405,7 @@ export async function POST(request: Request) {
   // 2. Upload via multipart/form-data
   const form = await request.formData();
   const album = String(form.get("album") ?? "").trim();
-  const isFastUpload = form.get("fast") === "true";
+  const uploadMode = form.get("uploadMode") === "direct" ? "direct" : "server";
   const files = form.getAll("files").filter((value): value is File => value instanceof File);
   if (!files.length) return jsonError("Không có file.", 400);
   if (files.some((file) => !file.type.startsWith("image/") && !file.type.startsWith("video/"))) {
@@ -161,31 +413,61 @@ export async function POST(request: Request) {
   }
   if (files.some((file) => file.size > MAX_FILE_SIZE)) return jsonError("Mỗi file tối đa 50 MB.", 413);
 
-  // Process files sequentially with 900ms delay to respect Telegram's 1 msg/sec per-chat rate limit
-  const DELAY_BETWEEN_FILES_MS = isFastUpload ? 0 : 900;
-  const records = [];
-  const errors: Array<{ filename: string; error: string }> = [];
+  if (uploadMode === "direct") {
+    const records: ImageRecord[] = [];
+    const errors: Array<{ filename: string; error: string }> = [];
 
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    if (i > 0 && DELAY_BETWEEN_FILES_MS > 0) {
-      await sleep(DELAY_BETWEEN_FILES_MS);
+    for (let i = 0; i < files.length; i++) {
+      if (i > 0) await sleep(900);
+      const file = files[i];
+
+      try {
+        const telegram = await uploadToTelegram(file);
+        records.push({
+          ...recordFromTelegram({
+            id: `img_${crypto.randomUUID()}`,
+            file,
+            ...telegram,
+          }),
+          ...(album ? { album } : {}),
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Upload thất bại.";
+        console.error(`[Upload Error] File "${file.name}":`, message);
+        errors.push({ filename: file.name, error: message });
+      }
     }
-    try {
-      const telegram = await uploadToTelegram(file);
-      records.push({
-        ...recordFromTelegram({ id: `img_${crypto.randomUUID()}`, file, ...telegram }),
-        ...(album ? { album } : {}),
-      });
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "Upload thất bại.";
-      console.error(`[Upload Error] File "${file.name}":`, msg);
-      errors.push({
-        filename: file.name,
-        error: msg,
-      });
+
+    if (records.length) {
+      try {
+        await appendRecords(records);
+      } catch (error) {
+        console.error("[GitHub Shard Error]:", error);
+        return jsonError(
+          `Telegram đã nhận ảnh nhưng GitHub chưa lưu metadata: ${error instanceof Error ? error.message : "lỗi không xác định"}`,
+          502,
+        );
+      }
     }
+
+    const isCompleteFailure = errors.length > 0 && records.length === 0;
+    return Response.json(
+      {
+        items: records,
+        errors,
+        error: isCompleteFailure ? errors[0]?.error || "Upload thất bại." : undefined,
+      },
+      { status: isCompleteFailure ? 502 : 200 },
+    );
   }
+
+  // Gửi toàn bộ danh sách files sang server NestJS trong 1 request duy nhất
+  // Server sẽ lưu hết xuống đĩa trước, sau đó gửi Album lên Telegram
+  const { items: records, errors } = await uploadBulkToImageServer(
+    files,
+    album || undefined,
+  );
 
   if (records.length) {
     try {

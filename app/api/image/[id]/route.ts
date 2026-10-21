@@ -22,8 +22,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     });
   }
 
-  const response = await fetch(await telegramFileUrl(record.telegramFileId), { cache: "no-store" });
-  if (!response.ok || !response.body) return Response.json({ error: "Telegram không còn phục vụ file." }, { status: 502 });
+  const imageUrl = record.url ?? (await telegramFileUrl(record.telegramFileId));
+  const response = await fetch(imageUrl, { cache: "no-store" });
+  if (!response.ok || !response.body) return Response.json({ error: "Không thể tải file ảnh từ server." }, { status: 502 });
 
   return new Response(response.body, {
     headers: {

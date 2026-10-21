@@ -25,6 +25,8 @@ type UploadItem = {
   file: File;
   preview: string;
   status: "pending" | "uploading" | "success" | "failed";
+  uploadMode?: "direct" | "server";
+  telegramRecord?: ImageRecord;
   error?: string;
 };
 
@@ -539,7 +541,7 @@ export default function ManageImagePage() {
   }
 
   async function uploadAll(
-    isFastUpload = false,
+    uploadMode: "direct" | "server",
     selectedItems?: UploadItem[],
   ) {
     const pending =
@@ -549,12 +551,10 @@ export default function ManageImagePage() {
     setIsStopRequested(false);
     setIsUploading(true);
 
-    // Gom 10 ảnh trong cùng 1 request HTTP (server sẽ xử lý giãn cách 900ms để chống rate limit của Telegram)
-    const BATCH_SIZE = isFastUpload ? pending.length : 10;
+    const BATCH_SIZE = uploadMode === "server" ? 20 : 10;
     for (let i = 0; i < pending.length; i += BATCH_SIZE) {
       if (stopUploadRef.current) break;
-      if (i > 0 && !isFastUpload) {
-        // Nghỉ 1000ms giữa các batch request để Telegram hồi phục hạn mức burst
+      if (i > 0 && uploadMode === "server") {
         await new Promise((r) => setTimeout(r, 100));
       }
 
@@ -564,67 +564,191 @@ export default function ManageImagePage() {
       setUploads((current) =>
         current.map((item): UploadItem =>
           batchIds.has(item.id)
-            ? { ...item, status: "uploading", error: undefined }
+            ? {
+                ...item,
+                status: "uploading",
+                uploadMode,
+                error: undefined,
+              }
             : item,
         ),
       );
 
-      const form = new FormData();
-      if (currentFolder) form.append("album", currentFolder);
-      if (isFastUpload) form.append("fast", "true");
-      for (const item of batch) {
-        // Giữ nguyên 100% chất lượng ảnh gốc, không nén
-        form.append("files", item.file);
-      }
-
       try {
-        const response = await fetch("/api/images", {
-          method: "POST",
-          body: form,
-        });
-        const result = await response.json();
+        if (uploadMode === "server") {
+          const recordsByUploadId = new Map<string, ImageRecord>();
+          const uploadErrors = new Map<string, string>();
 
-        if (!response.ok) {
-          const serverErr =
-            result.error ?? `Upload thất bại (${response.status})`;
-          setUploads((current) =>
-            current.map((item): UploadItem =>
-              batchIds.has(item.id)
-                ? { ...item, status: "failed", error: serverErr }
-                : item,
-            ),
-          );
-        } else {
-          const failedMap = new Map(
-            (result.errors ?? []).map(
-              (err: { filename: string; error: string }) => [
-                err.filename,
-                err.error,
-              ],
-            ),
-          );
+          for (const item of batch) {
+            if (item.telegramRecord) {
+              recordsByUploadId.set(item.id, item.telegramRecord);
+            }
+          }
 
-          setUploads((current: UploadItem[]) =>
-            current.map((item): UploadItem => {
-              if (!batchIds.has(item.id)) return item;
-              if (failedMap.has(item.file.name)) {
+          const filesToUpload = batch.filter((item) => !item.telegramRecord);
+          if (filesToUpload.length > 0) {
+            const form = new FormData();
+            if (currentFolder) form.append("album", currentFolder);
+            for (const item of filesToUpload) {
+              form.append("files", item.file);
+              form.append("uploadIds", item.id);
+            }
+
+            const telegramResponse = await fetch(
+              "/api/images?operation=upload-telegram",
+              { method: "POST", body: form },
+            );
+            const telegramResult = await telegramResponse.json();
+            if (!telegramResponse.ok) {
+              throw new Error(
+                telegramResult.error ??
+                  `Upload Telegram thất bại (${telegramResponse.status})`,
+              );
+            }
+
+            for (const result of telegramResult.items as Array<{
+              uploadId: string;
+              record: ImageRecord;
+            }>) {
+              recordsByUploadId.set(result.uploadId, result.record);
+            }
+            for (const result of telegramResult.errors as Array<{
+              uploadId: string;
+              error: string;
+            }>) {
+              uploadErrors.set(result.uploadId, result.error);
+            }
+
+            setUploads((current) =>
+              current.map((item): UploadItem => {
+                if (!batchIds.has(item.id)) return item;
+                const record = recordsByUploadId.get(item.id);
+                const uploadError = uploadErrors.get(item.id);
                 return {
                   ...item,
-                  status: "failed",
-                  error: String(failedMap.get(item.file.name) || "Lỗi upload"),
+                  ...(record ? { telegramRecord: record } : {}),
+                  ...(uploadError
+                    ? { status: "failed", error: uploadError }
+                    : {}),
                 };
-              }
-              return { ...item, status: "success", error: undefined };
-            }),
-          );
+              }),
+            );
+          }
+
+          const recordsToSave = batch.flatMap((item) => {
+            const record = recordsByUploadId.get(item.id);
+            return record ? [record] : [];
+          });
+
+          if (recordsToSave.length > 0) {
+            const saveResponse = await fetch(
+              "/api/images?operation=save-metadata",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ items: recordsToSave }),
+              },
+            );
+            const saveResult = await saveResponse.json();
+            if (!saveResponse.ok || !saveResult.ok) {
+              const saveError =
+                saveResult.error ??
+                `Không thể lưu metadata (${saveResponse.status})`;
+              setUploads((current) =>
+                current.map((item): UploadItem => {
+                  if (!recordsByUploadId.has(item.id)) return item;
+                  return {
+                    ...item,
+                    telegramRecord: recordsByUploadId.get(item.id),
+                    status: "failed",
+                    error: saveError,
+                  };
+                }),
+              );
+            } else {
+              setUploads((current) =>
+                current.map((item): UploadItem => {
+                  if (!recordsByUploadId.has(item.id)) return item;
+                  return {
+                    ...item,
+                    status: "success",
+                    error: undefined,
+                  };
+                }),
+              );
+            }
+          }
+
+          if (uploadErrors.size > 0) {
+            setUploads((current) =>
+              current.map((item): UploadItem => {
+                const uploadError = uploadErrors.get(item.id);
+                return uploadError
+                  ? { ...item, status: "failed", error: uploadError }
+                  : item;
+              }),
+            );
+          }
+        } else {
+          const form = new FormData();
+          if (currentFolder) form.append("album", currentFolder);
+          form.append("uploadMode", uploadMode);
+          for (const item of batch) {
+            form.append("files", item.file);
+          }
+
+          const response = await fetch("/api/images", {
+            method: "POST",
+            body: form,
+          });
+          const result = await response.json();
+
+          if (!response.ok) {
+            const serverErr =
+              result.error ?? `Upload thất bại (${response.status})`;
+            setUploads((current) =>
+              current.map((item): UploadItem =>
+                batchIds.has(item.id)
+                  ? { ...item, status: "failed", error: serverErr }
+                  : item,
+              ),
+            );
+          } else {
+            const failedMap = new Map(
+              (result.errors ?? []).map(
+                (err: { filename: string; error: string }) => [
+                  err.filename,
+                  err.error,
+                ],
+              ),
+            );
+
+            setUploads((current: UploadItem[]) =>
+              current.map((item): UploadItem => {
+                if (!batchIds.has(item.id)) return item;
+                if (failedMap.has(item.file.name)) {
+                  return {
+                    ...item,
+                    status: "failed",
+                    error: String(failedMap.get(item.file.name) || "Lỗi upload"),
+                  };
+                }
+                return { ...item, status: "success", error: undefined };
+              }),
+            );
+          }
         }
       } catch (reason) {
         const networkErr =
           reason instanceof Error ? reason.message : "Lỗi kết nối mạng";
         setUploads((current) =>
           current.map((item): UploadItem =>
-            batchIds.has(item.id)
-              ? { ...item, status: "failed", error: networkErr }
+            batchIds.has(item.id) && item.status !== "success"
+              ? {
+                  ...item,
+                  status: "failed",
+                  error: networkErr,
+                }
               : item,
           ),
         );
@@ -1701,10 +1825,50 @@ export default function ManageImagePage() {
                     gap: "6px",
                   }}
                 >
-                  <span>🛡️</span> Giữ nguyên 100% chất lượng gốc • Gom 10
-                  ảnh/request • Giãn cách 900ms chống Telegram Rate Limit (429)
+                  <span>🛡️</span> Giữ nguyên 100% chất lượng gốc • Load qua
+                  server gửi metadata tối đa 20 ảnh/request • Giãn cách 900ms
+                  chống Telegram Rate Limit (429)
                 </span>
               </div>
+              <details style={{ marginTop: "8px" }}>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                  Metadata gửi lên server để lưu GitHub
+                </summary>
+                <pre
+                  style={{
+                    overflowX: "auto",
+                    margin: "8px 0 0",
+                    padding: "10px",
+                    borderRadius: "4px",
+                    background: "rgba(29, 89, 96, 0.08)",
+                    fontSize: "11px",
+                  }}
+                >
+                  {JSON.stringify(
+                    {
+                      items: [
+                        {
+                          id: "img_...",
+                          filename: "photo.jpg",
+                          telegramFileId: "...",
+                          telegramFileUniqueId: "...",
+                          telegramMessageId: 123,
+                          size: 1024,
+                          mimeType: "image/jpeg",
+                          createdAt: "2026-10-21T08:00:00.000Z",
+                          album: "optional-folder",
+                        },
+                      ],
+                    },
+                    null,
+                    2,
+                  )}
+                </pre>
+                <p style={{ margin: "6px 0 0", fontSize: "11px" }}>
+                  width, height, url và tags là trường tùy chọn. File ảnh không
+                  được gửi trong request lưu metadata.
+                </p>
+              </details>
 
               {/* Direct Web URL Ingestion */}
               <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
@@ -1816,7 +1980,10 @@ export default function ManageImagePage() {
                     </span>
                     <div className={`upload-status-badge is-${item.status}`}>
                       {item.status === "pending" && "Chờ tải"}
-                      {item.status === "uploading" && "Đang gửi Telegram..."}
+                      {item.status === "uploading" &&
+                        (item.uploadMode === "server" && item.telegramRecord
+                          ? "Đang lưu metadata lên GitHub..."
+                          : "Đang gửi Telegram...")}
                       {item.status === "success" && "✓ Đã tải lên"}
                       {item.status === "failed" && "✕ Lỗi tải lên"}
                     </div>
@@ -1829,7 +1996,9 @@ export default function ManageImagePage() {
                       <button
                         type="button"
                         className="save-upload-button"
-                        onClick={() => uploadAll(false, [item])}
+                        onClick={() =>
+                          uploadAll(item.uploadMode ?? "direct", [item])
+                        }
                         disabled={isUploading}
                         style={{
                           marginTop: "8px",
@@ -1908,21 +2077,20 @@ export default function ManageImagePage() {
                     <button
                       type="button"
                       className="save-upload-button"
-                      onClick={() => uploadAll(false)}
+                      onClick={() => uploadAll("direct")}
                       disabled={isUploading}
                     >
                       {isUploading
                         ? "Đang tải lên..."
-                        : `Bắt đầu tải lên (${pendingCount})`}
+                        : `Load trực tiếp (${pendingCount})`}
                     </button>
                     <button
                       type="button"
-                      className="fast-upload-button"
-                      onClick={() => uploadAll(true)}
+                      className="server-upload-button"
+                      onClick={() => uploadAll("server")}
                       disabled={isUploading}
-                      title="Gửi nhanh, không chờ 900ms giữa các ảnh. Telegram có thể trả lỗi 409."
                     >
-                      Tải nhanh
+                      Load qua server
                     </button>
                   </div>
                 ) : (

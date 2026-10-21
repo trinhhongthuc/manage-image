@@ -4,6 +4,7 @@ export type ImageRecord = {
   telegramFileId: string;
   telegramFileUniqueId?: string;
   telegramMessageId: number;
+  url?: string;
   width?: number;
   height?: number;
   size: number;

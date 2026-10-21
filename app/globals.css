@@ -744,7 +744,7 @@ body {
   flex-wrap: wrap;
 }
 
-.fast-upload-button {
+.server-upload-button {
   height: 32px;
   padding: 0 14px;
   border: 1px solid #b6503e;
@@ -757,12 +757,12 @@ body {
   font-weight: 700;
 }
 
-.fast-upload-button:hover:not(:disabled) {
+.server-upload-button:hover:not(:disabled) {
   background: #b6503e;
   color: #fffdf9;
 }
 
-.fast-upload-button:disabled {
+.server-upload-button:disabled {
   cursor: wait;
   opacity: 0.6;
 }
@@ -2292,12 +2292,12 @@ body {
   background: #ddd;
 }
 
-.manage-page.is-dark-theme .fast-upload-button {
+.manage-page.is-dark-theme .server-upload-button {
   border-color: #fff;
   color: #fff;
 }
 
-.manage-page.is-dark-theme .fast-upload-button:hover:not(:disabled) {
+.manage-page.is-dark-theme .server-upload-button:hover:not(:disabled) {
   background: #fff;
   color: #000;
 }
