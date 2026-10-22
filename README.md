@@ -25,7 +25,7 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 The upload queue offers two routes:
 
 - **Load trực tiếp** uploads each file to Telegram and saves the returned metadata to GitHub through the management API.
-- **Load qua server** uploads files to Telegram first, then sends batches of up to 20 metadata records through the management API to the separate metadata server. The image files are not sent to the metadata-saving request. If metadata storage fails after Telegram accepts the upload, retrying the item resends its saved metadata without uploading the file to Telegram again.
+- **Load qua server** uploads files to Telegram first, then sends batches of up to 20 metadata records through the management API to the separate metadata server and saves those records to the GitHub gallery metadata. The image files are not sent to the metadata-saving request. If metadata storage fails after Telegram accepts the upload, retrying the item resends its saved metadata without uploading the file to Telegram again.
 
 The management API forwards `POST /api/images?operation=save-metadata` to `IMAGE_METADATA_API_URL` (default: `https://manage-image-be.onrender.com/upload`) as JSON. Configure `IMAGE_METADATA_API_URL` on the management server. The payload has this shape:
 

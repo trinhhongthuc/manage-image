@@ -275,7 +275,9 @@ export async function appendRecords(records: ImageRecord[]) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const current = await readShard(shard, true);
       try {
-        await writeShard(shard, [...current.items, ...additions], current.sha);
+        const merged = new Map(current.items.map((record) => [record.id, record]));
+        additions.forEach((record) => merged.set(record.id, record));
+        await writeShard(shard, Array.from(merged.values()), current.sha);
         break;
       } catch (error) {
         shardCache.delete(shard);

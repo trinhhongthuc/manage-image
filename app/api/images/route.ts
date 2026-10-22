@@ -231,8 +231,7 @@ export async function POST(request: Request) {
         size: record.size as number,
         mimeType: record.mimeType as string,
         createdAt: record.createdAt as string,
-        album: "news",
-        // ...(typeof record.album === "string" ? { album: 'news' } : {album: 'news'}),
+        ...(typeof record.album === "string" ? { album: record.album } : {album: "Bi/SX"}),
         ...(typeof record.url === "string" ? { url: record.url } : {}),
         ...(typeof record.width === "number" ? { width: record.width } : {}),
         ...(typeof record.height === "number" ? { height: record.height } : {}),
@@ -316,6 +315,24 @@ export async function POST(request: Request) {
           {
             error: "Metadata server báo lưu metadata thất bại.",
             upstreamStatus: response.status,
+            requestId,
+          },
+          { status: 502 },
+        );
+      }
+
+      try {
+        await appendRecords(records);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "lỗi không xác định";
+        console.error("[GitHub Shard Error] Metadata server upload succeeded", {
+          requestId,
+          message,
+        });
+        return Response.json(
+          {
+            error: `Metadata server đã lưu nhưng không thể lưu vào gallery: ${message}`,
             requestId,
           },
           { status: 502 },
