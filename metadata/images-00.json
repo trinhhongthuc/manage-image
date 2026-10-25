@@ -35457,5 +35457,27 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-10-25T04:57:26.082Z",
     "album": "Bi/SX"
+  },
+  {
+    "id": "img_8a8bbd17-1589-47b1-bb3e-9e2e698ac6f0",
+    "filename": "0502.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAWHRat2MTFfdzpll6YDTN8Wdeo4gbmAAAl4oAAIf5PFWTH3QsdBbm1I9BA",
+    "telegramFileUniqueId": "AgADXigAAh_k8VY",
+    "telegramMessageId": 90577,
+    "size": 117354,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-25T04:57:51.608Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_aafa81fa-2279-481f-8747-5e50ced43640",
+    "filename": "0504.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAWHTat2MT6atFJCOYxQUAu1ShSYtaVMAAmAoAAIf5PFWWaQj1ufPRiU9BA",
+    "telegramFileUniqueId": "AgADYCgAAh_k8VY",
+    "telegramMessageId": 90579,
+    "size": 155657,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-25T04:57:54.934Z",
+    "album": "Bi/SX"
   }
 ]
