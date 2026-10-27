@@ -576,6 +576,35 @@ body {
   color: #fffdf9;
 }
 
+.upload-modal-panel .upload-modal-back-to-top-btn {
+  position: sticky;
+  top: auto;
+  bottom: 16px;
+  z-index: 5;
+  align-self: flex-end;
+  margin-top: -44px;
+  border: 2px solid #fff;
+  background: #d95632;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(24, 42, 53, 0.45);
+}
+
+.upload-modal-panel .upload-modal-back-to-top-btn:hover {
+  background: #b84022;
+  transform: translateY(-3px) scale(1.08);
+  box-shadow: 0 10px 28px rgba(24, 42, 53, 0.55);
+}
+
+.manage-page.is-dark-theme .upload-modal-panel .upload-modal-back-to-top-btn {
+  background: #d95632;
+  color: #fff;
+}
+
+.manage-page.is-dark-theme .upload-modal-panel .upload-modal-back-to-top-btn:hover {
+  background: #b84022;
+  color: #fff;
+}
+
 .upload-preview-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -727,44 +756,17 @@ body {
 }
 
 .upload-modal-footer {
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(24, 42, 53, 0.1);
-}
-
-.upload-start-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.server-upload-button {
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid #b6503e;
-  border-radius: 3px;
-  background: transparent;
-  color: #b6503e;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.server-upload-button:hover:not(:disabled) {
-  background: #b6503e;
-  color: #fffdf9;
-}
-
-.server-upload-button:disabled {
-  cursor: wait;
-  opacity: 0.6;
+  margin-top: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(24, 42, 53, 0.1);
+  background: #fffdf9;
 }
 
 .modal-left-actions,
@@ -2249,6 +2251,11 @@ body {
   border-color: #444;
 }
 
+.manage-page.is-dark-theme .upload-modal-footer {
+  border-color: #444;
+  background: #111;
+}
+
 .manage-page.is-dark-theme .upload-card {
   background: #111;
   border-color: #444;
@@ -2290,16 +2297,6 @@ body {
 .manage-page.is-dark-theme .save-upload-button:hover,
 .manage-page.is-dark-theme .add-folder-button:hover {
   background: #ddd;
-}
-
-.manage-page.is-dark-theme .server-upload-button {
-  border-color: #fff;
-  color: #fff;
-}
-
-.manage-page.is-dark-theme .server-upload-button:hover:not(:disabled) {
-  background: #fff;
-  color: #000;
 }
 
 .manage-page.is-dark-theme .toast-message.toast-success,

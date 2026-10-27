@@ -25,8 +25,6 @@ type UploadItem = {
   file: File;
   preview: string;
   status: "pending" | "uploading" | "success" | "failed";
-  uploadMode?: "direct" | "server";
-  telegramRecord?: ImageRecord;
   error?: string;
 };
 
@@ -100,12 +98,15 @@ export default function ManageImagePage() {
   const loadRequestRef = useRef(0);
   const stopUploadRef = useRef(false);
   const filmstripContainerRef = useRef<HTMLDivElement | null>(null);
+  const uploadModalPanelRef = useRef<HTMLDivElement | null>(null);
   const [isSlideshow, setIsSlideshow] = useState<boolean>(false);
   const [showFilmstrip, setShowFilmstrip] = useState<boolean>(true);
   const [showCopyMenu, setShowCopyMenu] = useState<boolean>(false);
   const [showShortcuts, setShowShortcuts] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string>("");
   const [showBackToTop, setShowBackToTop] = useState<boolean>(false);
+  const [showUploadModalBackToTop, setShowUploadModalBackToTop] =
+    useState<boolean>(false);
 
   function showToast(msg: string) {
     setToastMessage(msg);
@@ -297,7 +298,6 @@ export default function ManageImagePage() {
       const response = await fetch(`/api/images?${params}`, {
         cache: "no-store",
       });
-      console.log('ressponse', response)
       if (response.status === 401) {
         window.location.href = "/";
         return;
@@ -344,6 +344,10 @@ export default function ManageImagePage() {
     showShortcuts,
     showDashboard,
   ]);
+
+  useEffect(() => {
+    if (!isUploadModalOpen) setShowUploadModalBackToTop(false);
+  }, [isUploadModalOpen]);
 
   const selectedIndex = selected
     ? data.items.findIndex((item) => item.id === selected.id)
@@ -540,25 +544,20 @@ export default function ManageImagePage() {
     }
   }
 
-  async function uploadAll(
-    uploadMode: "direct" | "server",
-    selectedItems?: UploadItem[],
-  ) {
-    const pending =
-      selectedItems ?? uploads.filter((item) => item.status === "pending");
-    if (!pending.length || isUploading) return;
+  async function uploadAll(selectedItemIds?: string[]) {
+    const itemsToUpload = selectedItemIds
+      ? uploads.filter((item) => selectedItemIds.includes(item.id))
+      : uploads.filter((item) => item.status === "pending");
+    if (!itemsToUpload.length || isUploading) return;
     stopUploadRef.current = false;
     setIsStopRequested(false);
     setIsUploading(true);
 
-    const BATCH_SIZE = uploadMode === "server" ? 20 : 10;
-    for (let i = 0; i < pending.length; i += BATCH_SIZE) {
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < itemsToUpload.length; i += BATCH_SIZE) {
       if (stopUploadRef.current) break;
-      if (i > 0 && uploadMode === "server") {
-        await new Promise((r) => setTimeout(r, 100));
-      }
 
-      const batch = pending.slice(i, i + BATCH_SIZE);
+      const batch = itemsToUpload.slice(i, i + BATCH_SIZE);
       const batchIds = new Set(batch.map((b) => b.id));
 
       setUploads((current) =>
@@ -567,7 +566,6 @@ export default function ManageImagePage() {
             ? {
                 ...item,
                 status: "uploading",
-                uploadMode,
                 error: undefined,
               }
             : item,
@@ -575,168 +573,51 @@ export default function ManageImagePage() {
       );
 
       try {
-        if (uploadMode === "server") {
-          const recordsByUploadId = new Map<string, ImageRecord>();
-          const uploadErrors = new Map<string, string>();
+        const form = new FormData();
+        if (currentFolder) form.append("album", currentFolder);
+        for (const item of batch) {
+          form.append("files", item.file);
+        }
 
-          for (const item of batch) {
-            if (item.telegramRecord) {
-              recordsByUploadId.set(item.id, item.telegramRecord);
-            }
-          }
+        const response = await fetch("/api/images", {
+          method: "POST",
+          body: form,
+        });
+        const result = await response.json();
 
-          const filesToUpload = batch.filter((item) => !item.telegramRecord);
-          if (filesToUpload.length > 0) {
-            const form = new FormData();
-            if (currentFolder) form.append("album", currentFolder);
-            for (const item of filesToUpload) {
-              form.append("files", item.file);
-              form.append("uploadIds", item.id);
-            }
+        if (!response.ok) {
+          const uploadError =
+            result.error ?? `Upload thất bại (${response.status})`;
+          setUploads((current) =>
+            current.map((item): UploadItem =>
+              batchIds.has(item.id)
+                ? { ...item, status: "failed", error: uploadError }
+                : item,
+            ),
+          );
+        } else {
+          const failedMap = new Map(
+            (result.errors ?? []).map(
+              (err: { filename: string; error: string }) => [
+                err.filename,
+                err.error,
+              ],
+            ),
+          );
 
-            const telegramResponse = await fetch(
-              "/api/images?operation=upload-telegram",
-              { method: "POST", body: form },
-            );
-            const telegramResult = await telegramResponse.json();
-            if (!telegramResponse.ok) {
-              throw new Error(
-                telegramResult.error ??
-                  `Upload Telegram thất bại (${telegramResponse.status})`,
-              );
-            }
-
-            for (const result of telegramResult.items as Array<{
-              uploadId: string;
-              record: ImageRecord;
-            }>) {
-              recordsByUploadId.set(result.uploadId, result.record);
-            }
-            for (const result of telegramResult.errors as Array<{
-              uploadId: string;
-              error: string;
-            }>) {
-              uploadErrors.set(result.uploadId, result.error);
-            }
-
-            setUploads((current) =>
-              current.map((item): UploadItem => {
-                if (!batchIds.has(item.id)) return item;
-                const record = recordsByUploadId.get(item.id);
-                const uploadError = uploadErrors.get(item.id);
+          setUploads((current: UploadItem[]) =>
+            current.map((item): UploadItem => {
+              if (!batchIds.has(item.id)) return item;
+              if (failedMap.has(item.file.name)) {
                 return {
                   ...item,
-                  ...(record ? { telegramRecord: record } : {}),
-                  ...(uploadError
-                    ? { status: "failed", error: uploadError }
-                    : {}),
+                  status: "failed",
+                  error: String(failedMap.get(item.file.name) || "Lỗi upload"),
                 };
-              }),
-            );
-          }
-
-          const recordsToSave = batch.flatMap((item) => {
-            const record = recordsByUploadId.get(item.id);
-            return record ? [record] : [];
-          });
-
-          if (recordsToSave.length > 0) {
-            const saveResponse = await fetch(
-              "/api/images?operation=save-metadata",
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ items: recordsToSave }),
-              },
-            );
-            const saveResult = await saveResponse.json();
-            if (!saveResponse.ok || !saveResult.ok) {
-              const saveError =
-                saveResult.error ??
-                `Không thể lưu metadata (${saveResponse.status})`;
-              setUploads((current) =>
-                current.map((item): UploadItem => {
-                  if (!recordsByUploadId.has(item.id)) return item;
-                  return {
-                    ...item,
-                    telegramRecord: recordsByUploadId.get(item.id),
-                    status: "failed",
-                    error: saveError,
-                  };
-                }),
-              );
-            } else {
-              setUploads((current) =>
-                current.map((item): UploadItem => {
-                  if (!recordsByUploadId.has(item.id)) return item;
-                  return {
-                    ...item,
-                    status: "success",
-                    error: undefined,
-                  };
-                }),
-              );
-            }
-          }
-
-          if (uploadErrors.size > 0) {
-            setUploads((current) =>
-              current.map((item): UploadItem => {
-                const uploadError = uploadErrors.get(item.id);
-                return uploadError
-                  ? { ...item, status: "failed", error: uploadError }
-                  : item;
-              }),
-            );
-          }
-        } else {
-          const form = new FormData();
-          if (currentFolder) form.append("album", currentFolder);
-          form.append("uploadMode", uploadMode);
-          for (const item of batch) {
-            form.append("files", item.file);
-          }
-
-          const response = await fetch("/api/images", {
-            method: "POST",
-            body: form,
-          });
-          const result = await response.json();
-
-          if (!response.ok) {
-            const serverErr =
-              result.error ?? `Upload thất bại (${response.status})`;
-            setUploads((current) =>
-              current.map((item): UploadItem =>
-                batchIds.has(item.id)
-                  ? { ...item, status: "failed", error: serverErr }
-                  : item,
-              ),
-            );
-          } else {
-            const failedMap = new Map(
-              (result.errors ?? []).map(
-                (err: { filename: string; error: string }) => [
-                  err.filename,
-                  err.error,
-                ],
-              ),
-            );
-
-            setUploads((current: UploadItem[]) =>
-              current.map((item): UploadItem => {
-                if (!batchIds.has(item.id)) return item;
-                if (failedMap.has(item.file.name)) {
-                  return {
-                    ...item,
-                    status: "failed",
-                    error: String(failedMap.get(item.file.name) || "Lỗi upload"),
-                  };
-                }
-                return { ...item, status: "success", error: undefined };
-              }),
-            );
-          }
+              }
+              return { ...item, status: "success", error: undefined };
+            }),
+          );
         }
       } catch (reason) {
         const networkErr =
@@ -1775,7 +1656,13 @@ export default function ManageImagePage() {
       {/* Upload Preview Modal */}
       {isUploadModalOpen && (
         <div className="upload-modal" role="dialog" aria-modal="true">
-          <div className="upload-modal-panel">
+          <div
+            className="upload-modal-panel"
+            ref={uploadModalPanelRef}
+            onScroll={(event) =>
+              setShowUploadModalBackToTop(event.currentTarget.scrollTop > 160)
+            }
+          >
             <div className="upload-modal-header">
               <div>
                 <p className="login-kicker">HÀNG ĐỢI TẢI LÊN</p>
@@ -1792,6 +1679,23 @@ export default function ManageImagePage() {
                 ×
               </button>
             </div>
+
+            {showUploadModalBackToTop && (
+              <button
+                type="button"
+                className="back-to-top-btn upload-modal-back-to-top-btn"
+                onClick={() =>
+                  uploadModalPanelRef.current?.scrollTo({
+                    top: 0,
+                    behavior: "smooth",
+                  })
+                }
+                title="Lên đầu danh sách"
+                aria-label="Lên đầu danh sách ảnh"
+              >
+                ↑
+              </button>
+            )}
 
             {/* Rate Limit Protection Banner & URL Uploader */}
             <div
@@ -1825,51 +1729,11 @@ export default function ManageImagePage() {
                     gap: "6px",
                   }}
                 >
-                  <span>🛡️</span> Giữ nguyên 100% chất lượng gốc • Load qua
-                  server gửi metadata tối đa 20 ảnh/request • Giãn cách 900ms
+                  <span>🛡️</span> Giữ nguyên 100% chất lượng gốc • Tối đa 10
+                  ảnh/request • Giãn cách 900ms
                   chống Telegram Rate Limit (429)
                 </span>
               </div>
-              <details style={{ marginTop: "8px" }}>
-                <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-                  Metadata gửi lên server để lưu GitHub
-                </summary>
-                <pre
-                  style={{
-                    overflowX: "auto",
-                    margin: "8px 0 0",
-                    padding: "10px",
-                    borderRadius: "4px",
-                    background: "rgba(29, 89, 96, 0.08)",
-                    fontSize: "11px",
-                  }}
-                >
-                  {JSON.stringify(
-                    {
-                      items: [
-                        {
-                          id: "img_...",
-                          filename: "photo.jpg",
-                          telegramFileId: "...",
-                          telegramFileUniqueId: "...",
-                          telegramMessageId: 123,
-                          size: 1024,
-                          mimeType: "image/jpeg",
-                          createdAt: "2026-10-21T08:00:00.000Z",
-                          album: "optional-folder",
-                        },
-                      ],
-                    },
-                    null,
-                    2,
-                  )}
-                </pre>
-                <p style={{ margin: "6px 0 0", fontSize: "11px" }}>
-                  width, height, url và tags là trường tùy chọn. File ảnh không
-                  được gửi trong request lưu metadata.
-                </p>
-              </details>
-
               {/* Direct Web URL Ingestion */}
               <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
                 <input
@@ -1943,77 +1807,6 @@ export default function ManageImagePage() {
               )}
             </div>
 
-            <div className="upload-preview-grid">
-              {uploads.map((item) => (
-                <div className="upload-card" key={item.id}>
-                  <div className="upload-card-thumb">
-                    {item.file.type.startsWith("video/") ? (
-                      <div className="video-card-thumb">
-                        <video src={item.preview} muted preload="metadata" />
-                        <div
-                          className="video-play-badge"
-                          style={{ width: "26px", height: "26px", fontSize: "11px" }}
-                        >
-                          ▶
-                        </div>
-                      </div>
-                    ) : (
-                      <img src={item.preview} alt={item.file.name} />
-                    )}
-                    {item.status !== "uploading" && (
-                      <button
-                        type="button"
-                        className="upload-remove-button"
-                        onClick={() => removeUpload(item.id)}
-                        title="Bỏ file này"
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                  <div className="upload-card-info">
-                    <span className="upload-filename" title={item.file.name}>
-                      {item.file.name}
-                    </span>
-                    <span className="upload-filesize">
-                      {formatSize(item.file.size)}
-                    </span>
-                    <div className={`upload-status-badge is-${item.status}`}>
-                      {item.status === "pending" && "Chờ tải"}
-                      {item.status === "uploading" &&
-                        (item.uploadMode === "server" && item.telegramRecord
-                          ? "Đang lưu metadata lên GitHub..."
-                          : "Đang gửi Telegram...")}
-                      {item.status === "success" && "✓ Đã tải lên"}
-                      {item.status === "failed" && "✕ Lỗi tải lên"}
-                    </div>
-                    {item.error && (
-                      <p className="upload-card-error" title={item.error}>
-                        {item.error}
-                      </p>
-                    )}
-                    {item.status === "failed" && (
-                      <button
-                        type="button"
-                        className="save-upload-button"
-                        onClick={() =>
-                          uploadAll(item.uploadMode ?? "direct", [item])
-                        }
-                        disabled={isUploading}
-                        style={{
-                          marginTop: "8px",
-                          padding: "6px 10px",
-                          fontSize: "11px",
-                        }}
-                      >
-                        Tải lên lại
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
             <div className="upload-modal-footer">
               <div className="modal-left-actions">
                 <label
@@ -2072,37 +1865,94 @@ export default function ManageImagePage() {
                   >
                     {isStopRequested ? "Đang dừng..." : "Dừng tải lên"}
                   </button>
-                ) : pendingCount > 0 ? (
-                  <div className="upload-start-actions">
-                    <button
-                      type="button"
-                      className="save-upload-button"
-                      onClick={() => uploadAll("direct")}
-                      disabled={isUploading}
-                    >
-                      {isUploading
-                        ? "Đang tải lên..."
-                        : `Load trực tiếp (${pendingCount})`}
-                    </button>
-                    <button
-                      type="button"
-                      className="server-upload-button"
-                      onClick={() => uploadAll("server")}
-                      disabled={isUploading}
-                    >
-                      Load qua server
-                    </button>
-                  </div>
                 ) : (
-                  <button
-                    type="button"
-                    className="save-upload-button"
-                    onClick={handleCloseModal}
-                  >
-                    Hoàn tất & Đóng
-                  </button>
+                  <>
+                    {failedCount > 0 && (
+                      <button
+                        type="button"
+                        className="save-upload-button"
+                        onClick={() =>
+                          uploadAll(
+                            uploads
+                              .filter((item) => item.status === "failed")
+                              .map((item) => item.id),
+                          )
+                        }
+                      >
+                        Tải lại ảnh lỗi ({failedCount})
+                      </button>
+                    )}
+                    {pendingCount > 0 ? (
+                      <button
+                        type="button"
+                        className="save-upload-button"
+                        onClick={() => uploadAll()}
+                      >
+                        Tải lên ({pendingCount})
+                      </button>
+                    ) : failedCount === 0 ? (
+                      <button
+                        type="button"
+                        className="save-upload-button"
+                        onClick={handleCloseModal}
+                      >
+                        Hoàn tất & Đóng
+                      </button>
+                    ) : null}
+                  </>
                 )}
               </div>
+            </div>
+
+            <div className="upload-preview-grid">
+              {uploads.map((item) => (
+                <div className="upload-card" key={item.id}>
+                  <div className="upload-card-thumb">
+                    {item.file.type.startsWith("video/") ? (
+                      <div className="video-card-thumb">
+                        <video src={item.preview} muted preload="metadata" />
+                        <div
+                          className="video-play-badge"
+                          style={{ width: "26px", height: "26px", fontSize: "11px" }}
+                        >
+                          ▶
+                        </div>
+                      </div>
+                    ) : (
+                      <img src={item.preview} alt={item.file.name} />
+                    )}
+                    {item.status !== "uploading" && (
+                      <button
+                        type="button"
+                        className="upload-remove-button"
+                        onClick={() => removeUpload(item.id)}
+                        title="Bỏ file này"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <div className="upload-card-info">
+                    <span className="upload-filename" title={item.file.name}>
+                      {item.file.name}
+                    </span>
+                    <span className="upload-filesize">
+                      {formatSize(item.file.size)}
+                    </span>
+                    <div className={`upload-status-badge is-${item.status}`}>
+                      {item.status === "pending" && "Chờ tải"}
+                      {item.status === "uploading" && "Đang gửi Telegram..."}
+                      {item.status === "success" && "✓ Đã tải lên"}
+                      {item.status === "failed" && "✕ Lỗi tải lên"}
+                    </div>
+                    {item.error && (
+                      <p className="upload-card-error" title={item.error}>
+                        {item.error}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
