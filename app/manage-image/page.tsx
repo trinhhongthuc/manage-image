@@ -38,8 +38,6 @@ type UploadItem = {
   error?: string;
 };
 
-const UPLOAD_PREVIEW_PAGE_SIZE = 50;
-
 function formatSize(size: number) {
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
@@ -53,7 +51,6 @@ export default function ManageImagePage() {
   const [data, setData] = useState<ImagePage>(emptyPage);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [isUploadQueueLoaded, setIsUploadQueueLoaded] = useState(false);
-  const [uploadPreviewPage, setUploadPreviewPage] = useState(1);
   const [shouldResumeRestoredUploads, setShouldResumeRestoredUploads] =
     useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -565,7 +562,6 @@ export default function ManageImagePage() {
       return;
     }
     setUploads((current) => [...current, ...newItems]);
-    setUploadPreviewPage(Math.ceil((uploadsRef.current.length + newItems.length) / UPLOAD_PREVIEW_PAGE_SIZE));
     setIsUploadModalOpen(true);
   }
 
@@ -615,7 +611,6 @@ export default function ManageImagePage() {
       uploads.forEach((item) => URL.revokeObjectURL(item.preview));
       setUploads([]);
       setIsUploadModalOpen(false);
-      setUploadPreviewPage(1);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Không thể xóa hàng đợi upload.");
     }
@@ -1071,18 +1066,6 @@ export default function ManageImagePage() {
   const uploadingCount = uploads.filter((u) => u.status === "uploading").length;
   const successCount = uploads.filter((u) => u.status === "success").length;
   const failedCount = uploads.filter((u) => u.status === "failed").length;
-  const uploadPreviewPageCount = Math.max(
-    1,
-    Math.ceil(uploads.length / UPLOAD_PREVIEW_PAGE_SIZE),
-  );
-  const currentUploadPreviewPage = Math.min(
-    uploadPreviewPage,
-    uploadPreviewPageCount,
-  );
-  const visibleUploads = uploads.slice(
-    (currentUploadPreviewPage - 1) * UPLOAD_PREVIEW_PAGE_SIZE,
-    currentUploadPreviewPage * UPLOAD_PREVIEW_PAGE_SIZE,
-  );
   const totalUploadSize = uploads.reduce((acc, cur) => acc + cur.file.size, 0);
   const progressPercent = uploads.length
     ? Math.round(((successCount + failedCount) / uploads.length) * 100)
@@ -2144,36 +2127,7 @@ export default function ManageImagePage() {
             </div>
 
             <div className="upload-preview-grid">
-              {uploadPreviewPageCount > 1 && (
-                <div className="pagination-container" aria-label="Phân trang hàng đợi upload">
-                  <span style={{ fontSize: "12px", color: "#637078" }}>
-                    Hiển thị {(currentUploadPreviewPage - 1) * UPLOAD_PREVIEW_PAGE_SIZE + 1} -{" "}
-                    {Math.min(currentUploadPreviewPage * UPLOAD_PREVIEW_PAGE_SIZE, uploads.length)} / {uploads.length} file
-                  </span>
-                  <div className="pagination-controls">
-                    <button
-                      type="button"
-                      className="pagination-btn"
-                      disabled={currentUploadPreviewPage === 1}
-                      onClick={() => setUploadPreviewPage(currentUploadPreviewPage - 1)}
-                    >
-                      ‹
-                    </button>
-                    <span className="pagination-btn is-active">
-                      {currentUploadPreviewPage} / {uploadPreviewPageCount}
-                    </span>
-                    <button
-                      type="button"
-                      className="pagination-btn"
-                      disabled={currentUploadPreviewPage === uploadPreviewPageCount}
-                      onClick={() => setUploadPreviewPage(currentUploadPreviewPage + 1)}
-                    >
-                      ›
-                    </button>
-                  </div>
-                </div>
-              )}
-              {visibleUploads.map((item) => (
+              {uploads.map((item) => (
                 <div className="upload-card" key={item.id}>
                   <div className="upload-card-thumb">
                     {item.file.type.startsWith("video/") ? (
