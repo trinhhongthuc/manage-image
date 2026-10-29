@@ -10,8 +10,18 @@ import {
 } from "react";
 import type { ImagePage, ImageRecord } from "@/lib/types";
 import { ManageHeader, UploadDropzone, UploadQueueBanner } from "./components";
+import {
+  clearStoredUploadItems,
+  readUploadQueue,
+  removeStoredUploadItems,
+  storeNewUploadItems,
+  updateStoredUploadItems,
+  type UploadStatus,
+} from "./upload-queue";
+import type { UploadWorkerEvent } from "./upload-worker";
 
 const TAB_SESSION_KEY = "manage-image-tab-session";
+const ACTIVE_UPLOAD_SESSION_KEY = "manage-image-upload-active";
 
 const emptyPage: ImagePage = {
   items: [],
@@ -24,36 +34,11 @@ type UploadItem = {
   id: string;
   file: File;
   preview: string;
-  status: "pending" | "uploading" | "success" | "failed";
+  status: UploadStatus;
   error?: string;
 };
 
-const MAX_UPLOAD_FILES_PER_BATCH = 10;
-const MAX_UPLOAD_BATCH_BYTES = 4.5 * 1024 * 1024 - 64 * 1024;
-
-function createUploadBatches(items: UploadItem[]) {
-  const batches: UploadItem[][] = [];
-  let batch: UploadItem[] = [];
-  let batchSize = 0;
-
-  for (const item of items) {
-    if (
-      batch.length > 0 &&
-      (batch.length >= MAX_UPLOAD_FILES_PER_BATCH ||
-        batchSize + item.file.size > MAX_UPLOAD_BATCH_BYTES)
-    ) {
-      batches.push(batch);
-      batch = [];
-      batchSize = 0;
-    }
-
-    batch.push(item);
-    batchSize += item.file.size;
-  }
-
-  if (batch.length > 0) batches.push(batch);
-  return batches;
-}
+const UPLOAD_PREVIEW_PAGE_SIZE = 50;
 
 function formatSize(size: number) {
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
@@ -67,6 +52,10 @@ function displayFolderName(folder: string) {
 export default function ManageImagePage() {
   const [data, setData] = useState<ImagePage>(emptyPage);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const [isUploadQueueLoaded, setIsUploadQueueLoaded] = useState(false);
+  const [uploadPreviewPage, setUploadPreviewPage] = useState(1);
+  const [shouldResumeRestoredUploads, setShouldResumeRestoredUploads] =
+    useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [urlInput, setUrlInput] = useState("");
@@ -124,8 +113,13 @@ export default function ManageImagePage() {
   const touchStart = useRef<{ x: number; y: number } | null>(null);
   const loadRequestRef = useRef(0);
   const stopUploadRef = useRef(false);
+  const resumeRestoredUploadsStartedRef = useRef(false);
+  const uploadAllRef = useRef<() => Promise<void>>(async () => {});
+  const uploadWorkerRef = useRef<Worker | null>(null);
   const filmstripContainerRef = useRef<HTMLDivElement | null>(null);
   const uploadModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const uploadsRef = useRef(uploads);
+  uploadsRef.current = uploads;
   const [isSlideshow, setIsSlideshow] = useState<boolean>(false);
   const [showFilmstrip, setShowFilmstrip] = useState<boolean>(true);
   const [showCopyMenu, setShowCopyMenu] = useState<boolean>(false);
@@ -211,6 +205,80 @@ export default function ManageImagePage() {
       | "dark"
       | null;
     if (savedTheme) setTheme(savedTheme);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    readUploadQueue()
+      .then(async (storedItems) => {
+        if (!active) return;
+        const restoredItems: UploadItem[] = storedItems.map((item) => ({
+          id: item.id,
+          file: item.file,
+          preview: URL.createObjectURL(item.file),
+          status: item.status === "uploading" ? "failed" : item.status,
+          ...(item.status === "uploading"
+            ? {
+                error:
+                  "Tab đã tải lại khi file đang gửi. Hãy kiểm tra thư viện trước khi thử lại để tránh tải trùng.",
+              }
+            : item.error
+              ? { error: item.error }
+              : {}),
+        }));
+        const storedItemsById = new Map(
+          storedItems.map((item) => [item.id, item]),
+        );
+        const interruptedItems = restoredItems.filter(
+          (item) => storedItemsById.get(item.id)?.status === "uploading",
+        );
+        if (interruptedItems.length) {
+          try {
+            await updateStoredUploadItems(
+              interruptedItems.map((item) => ({
+                id: item.id,
+                filename: item.file.name,
+                size: item.file.size,
+                mimeType: item.file.type,
+                status: item.status,
+                ...(item.error ? { error: item.error } : {}),
+              })),
+            );
+          } catch (reason) {
+            setError(
+              reason instanceof Error
+                ? `Không thể lưu trạng thái file bị ngắt: ${reason.message}`
+                : "Không thể lưu trạng thái file bị ngắt.",
+            );
+          }
+        }
+        if (!active) {
+          restoredItems.forEach((item) => URL.revokeObjectURL(item.preview));
+          return;
+        }
+        setUploads(restoredItems);
+        setIsUploadModalOpen(restoredItems.length > 0);
+        const shouldResume =
+          sessionStorage.getItem(ACTIVE_UPLOAD_SESSION_KEY) === "true";
+        sessionStorage.removeItem(ACTIVE_UPLOAD_SESSION_KEY);
+        setShouldResumeRestoredUploads(
+          shouldResume &&
+            restoredItems.some((item) => item.status === "pending"),
+        );
+        setIsUploadQueueLoaded(true);
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setError(
+          reason instanceof Error
+            ? `Không thể khôi phục hàng đợi upload: ${reason.message}`
+            : "Không thể khôi phục hàng đợi upload.",
+        );
+        setIsUploadQueueLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -470,7 +538,11 @@ export default function ManageImagePage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selected, selectedIndex, data.items, showShortcuts, showDashboard]);
 
-  function addFiles(files: File[]) {
+  async function addFiles(files: File[]) {
+    if (!isUploadQueueLoaded) {
+      showToast("Đang khôi phục hàng đợi. Vui lòng thử lại sau giây lát.");
+      return;
+    }
     const valid = files.filter(
       (file) => file.type.startsWith("image/") || file.type.startsWith("video/"),
     );
@@ -481,43 +553,72 @@ export default function ManageImagePage() {
       preview: URL.createObjectURL(file),
       status: "pending",
     }));
+    try {
+      await storeNewUploadItems(newItems);
+    } catch (reason) {
+      newItems.forEach((item) => URL.revokeObjectURL(item.preview));
+      setError(
+        reason instanceof Error
+          ? `Không thể lưu hàng đợi upload trên trình duyệt: ${reason.message}`
+          : "Không thể lưu hàng đợi upload trên trình duyệt.",
+      );
+      return;
+    }
     setUploads((current) => [...current, ...newItems]);
+    setUploadPreviewPage(Math.ceil((uploadsRef.current.length + newItems.length) / UPLOAD_PREVIEW_PAGE_SIZE));
     setIsUploadModalOpen(true);
   }
 
   function handleChange(event: ChangeEvent<HTMLInputElement>) {
-    addFiles(Array.from(event.target.files ?? []));
+    void addFiles(Array.from(event.target.files ?? []));
     event.target.value = "";
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setDragging(false);
-    addFiles(Array.from(event.dataTransfer.files));
+    void addFiles(Array.from(event.dataTransfer.files));
   }
 
-  function removeUpload(id: string) {
-    setUploads((current) => {
-      const target = current.find((item) => item.id === id);
-      if (target?.preview) URL.revokeObjectURL(target.preview);
-      return current.filter((item) => item.id !== id);
-    });
+  async function removeUpload(id: string) {
+    try {
+      await removeStoredUploadItems([id]);
+      setUploads((current) => {
+        const target = current.find((item) => item.id === id);
+        if (target?.preview) URL.revokeObjectURL(target.preview);
+        return current.filter((item) => item.id !== id);
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Không thể xóa file khỏi hàng đợi.");
+    }
   }
 
-  function clearCompleted() {
-    setUploads((current) => {
-      current
-        .filter((item) => item.status === "success")
-        .forEach((item) => URL.revokeObjectURL(item.preview));
-      return current.filter((item) => item.status !== "success");
-    });
+  async function clearCompleted() {
+    const completed = uploads.filter((item) => item.status === "success");
+    try {
+      await removeStoredUploadItems(completed.map((item) => item.id));
+      setUploads((current) => {
+        current
+          .filter((item) => item.status === "success")
+          .forEach((item) => URL.revokeObjectURL(item.preview));
+        return current.filter((item) => item.status !== "success");
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Không thể dọn hàng đợi upload.");
+    }
   }
 
-  function clearAll() {
+  async function clearAll() {
     if (isUploading) return;
-    uploads.forEach((item) => URL.revokeObjectURL(item.preview));
-    setUploads([]);
-    setIsUploadModalOpen(false);
+    try {
+      await clearStoredUploadItems();
+      uploads.forEach((item) => URL.revokeObjectURL(item.preview));
+      setUploads([]);
+      setIsUploadModalOpen(false);
+      setUploadPreviewPage(1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Không thể xóa hàng đợi upload.");
+    }
   }
 
   // Preload adjacent high-res images in background for instantaneous (0ms) lightbox switching
@@ -573,115 +674,171 @@ export default function ManageImagePage() {
 
   async function uploadAll(selectedItemIds?: string[]) {
     const itemsToUpload = selectedItemIds
-      ? uploads.filter((item) => selectedItemIds.includes(item.id))
-      : uploads.filter((item) => item.status === "pending");
+      ? uploadsRef.current.filter((item) => selectedItemIds.includes(item.id))
+      : uploadsRef.current.filter((item) => item.status === "pending");
     if (!itemsToUpload.length || isUploading) return;
     stopUploadRef.current = false;
+    sessionStorage.setItem(ACTIVE_UPLOAD_SESSION_KEY, "true");
     setIsStopRequested(false);
     setIsUploading(true);
 
-    const batches = createUploadBatches(itemsToUpload);
-    for (const batch of batches) {
-      if (stopUploadRef.current) break;
+    const successfulUploadIds = new Set(
+      uploadsRef.current
+        .filter((item) => item.status === "success")
+        .map((item) => item.id),
+    );
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("./upload-worker.ts", import.meta.url), {
+        type: "module",
+      });
+    } catch (reason) {
+      const message =
+        reason instanceof Error ? reason.message : "Không thể khởi động worker upload.";
+      sessionStorage.removeItem(ACTIVE_UPLOAD_SESSION_KEY);
+      setIsUploading(false);
+      setError(message);
+      return;
+    }
+    uploadWorkerRef.current = worker;
 
-      const batchIds = new Set(batch.map((b) => b.id));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let updates = Promise.resolve();
+        let settled = false;
+        let storageError: Error | undefined;
+        const fail = (reason: Error) => {
+          if (settled) return;
+          settled = true;
+          reject(reason);
+        };
 
-      setUploads((current) =>
-        current.map((item): UploadItem =>
-          batchIds.has(item.id)
-            ? {
-                ...item,
-                status: "uploading",
-                error: undefined,
+        worker.onmessage = (event: MessageEvent<UploadWorkerEvent>) => {
+          const message = event.data;
+          if (message.type === "error") {
+            fail(new Error(message.message));
+            return;
+          }
+          if (message.type === "complete") {
+            updates.then(() => {
+              if (!settled) {
+                settled = true;
+                if (storageError) reject(storageError);
+                else resolve();
               }
+            }, fail);
+            return;
+          }
+
+          updates = updates.then(async () => {
+            const updatedItems = message.items;
+            try {
+              await updateStoredUploadItems(updatedItems);
+            } catch (reason) {
+              storageError =
+                reason instanceof Error
+                  ? reason
+                  : new Error("Không thể cập nhật trạng thái hàng đợi.");
+              worker.postMessage({ type: "stop" });
+              setError(storageError.message);
+            }
+            updatedItems
+              .filter((item) => item.status === "success")
+              .forEach((item) => successfulUploadIds.add(item.id));
+
+            const updatedById = new Map(
+              updatedItems.map((item) => [item.id, item]),
+            );
+            setUploads((current) =>
+              current.map((item): UploadItem => {
+                const status = updatedById.get(item.id);
+                return status
+                  ? {
+                      ...item,
+                      status: status.status,
+                      error: status.error,
+                    }
+                  : item;
+              }),
+            );
+          }).catch((reason: unknown) => {
+            fail(
+              reason instanceof Error
+                ? reason
+                : new Error("Không thể cập nhật trạng thái hàng đợi."),
+            );
+          });
+        };
+
+        worker.onerror = (event) => {
+          event.preventDefault();
+          fail(new Error(event.message || "Worker upload gặp lỗi."));
+        };
+        worker.postMessage({
+          type: "start",
+          album: currentFolder,
+          items: itemsToUpload.map(({ id, file }) => ({ id, file })),
+        });
+      });
+    } catch (reason) {
+      const uploadError =
+        reason instanceof Error ? reason.message : "Worker upload gặp lỗi.";
+      const interruptedItems = uploadsRef.current.filter(
+        (item) => item.status === "uploading",
+      );
+      try {
+        await updateStoredUploadItems(
+          interruptedItems.map((item) => ({
+            id: item.id,
+            filename: item.file.name,
+            size: item.file.size,
+            mimeType: item.file.type,
+            status: "failed",
+            error: uploadError,
+          })),
+        );
+      } catch (storageError) {
+        setError(
+          storageError instanceof Error
+            ? `Không thể lưu trạng thái hàng đợi: ${storageError.message}`
+            : "Không thể lưu trạng thái hàng đợi.",
+        );
+      }
+      setUploads((current) =>
+        current.map((item) =>
+          item.status === "uploading"
+            ? { ...item, status: "failed", error: uploadError }
             : item,
         ),
       );
-
-      try {
-        const form = new FormData();
-        if (currentFolder) form.append("album", currentFolder);
-        for (const item of batch) {
-          form.append("files", item.file);
-        }
-
-        const response = await fetch("/api/images", {
-          method: "POST",
-          body: form,
-        });
-        const responseText = await response.text();
-        let result: {
-          error?: string;
-          errors?: Array<{ filename: string; error: string }>;
-        };
-        try {
-          result = JSON.parse(responseText);
-        } catch {
-          throw new Error(
-            !response.ok && responseText.trim()
-              ? `Upload thất bại (${response.status}): ${responseText.trim()}`
-              : "Máy chủ không trả về JSON hợp lệ.",
-          );
-        }
-
-        if (!response.ok) {
-          const uploadError =
-            result.error ?? `Upload thất bại (${response.status})`;
-          setUploads((current) =>
-            current.map((item): UploadItem =>
-              batchIds.has(item.id)
-                ? { ...item, status: "failed", error: uploadError }
-                : item,
-            ),
-          );
-        } else {
-          const failedMap = new Map(
-            (result.errors ?? []).map(
-              (err: { filename: string; error: string }) => [
-                err.filename,
-                err.error,
-              ],
-            ),
-          );
-
-          setUploads((current: UploadItem[]) =>
-            current.map((item): UploadItem => {
-              if (!batchIds.has(item.id)) return item;
-              if (failedMap.has(item.file.name)) {
-                return {
-                  ...item,
-                  status: "failed",
-                  error: String(failedMap.get(item.file.name) || "Lỗi upload"),
-                };
-              }
-              return { ...item, status: "success", error: undefined };
-            }),
-          );
-        }
-      } catch (reason) {
-        const networkErr =
-          reason instanceof Error ? reason.message : "Lỗi kết nối mạng";
-        setUploads((current) =>
-          current.map((item): UploadItem =>
-            batchIds.has(item.id) && item.status !== "success"
-              ? {
-                  ...item,
-                  status: "failed",
-                  error: networkErr,
-                }
-              : item,
-          ),
-        );
-      }
+      setError(uploadError);
+    } finally {
+      worker.terminate();
+      uploadWorkerRef.current = null;
     }
 
     const wasStopped = stopUploadRef.current;
     stopUploadRef.current = false;
     setIsStopRequested(false);
     setIsUploading(false);
-    await load(1, limit);
+    try {
+      await load(1, limit);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Không thể tải lại thư viện.",
+      );
+    }
 
     // Keep failed and not-yet-uploaded files available for retry or resume.
+    try {
+      await removeStoredUploadItems(Array.from(successfulUploadIds));
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? `Ảnh đã tải nhưng không thể dọn dữ liệu upload tạm: ${reason.message}`
+          : "Ảnh đã tải nhưng không thể dọn dữ liệu upload tạm.",
+      );
+    }
     setUploads((current) => {
       const remaining = current.filter((item) => item.status !== "success");
       const successful = current.filter((item) => item.status === "success");
@@ -690,20 +847,48 @@ export default function ManageImagePage() {
       });
 
       if (remaining.length === 0) {
+        sessionStorage.removeItem(ACTIVE_UPLOAD_SESSION_KEY);
         setIsUploadModalOpen(false);
         showToast(
           "✓ Đã tải lên toàn bộ ảnh thành công với chất lượng gốc 100%!",
         );
         return [];
       }
-      if (wasStopped) showToast("Đã dừng tải lên. Bạn có thể tiếp tục bất cứ lúc nào.");
+      if (wasStopped) {
+        sessionStorage.removeItem(ACTIVE_UPLOAD_SESSION_KEY);
+        showToast("Đã dừng tải lên. Bạn có thể tiếp tục bất cứ lúc nào.");
+      }
       return remaining;
     });
+    if (!wasStopped) {
+      sessionStorage.removeItem(ACTIVE_UPLOAD_SESSION_KEY);
+    }
   }
+
+  uploadAllRef.current = uploadAll;
+
+  useEffect(() => {
+    if (
+      !isUploadQueueLoaded ||
+      !shouldResumeRestoredUploads ||
+      isUploading ||
+      resumeRestoredUploadsStartedRef.current
+    ) {
+      return;
+    }
+    resumeRestoredUploadsStartedRef.current = true;
+    void uploadAllRef.current();
+  }, [
+    isUploadQueueLoaded,
+    isUploading,
+    shouldResumeRestoredUploads,
+    uploads,
+  ]);
 
   function stopUpload() {
     stopUploadRef.current = true;
     setIsStopRequested(true);
+    uploadWorkerRef.current?.postMessage({ type: "stop" });
   }
 
   async function deleteSingleImage(image: ImageRecord) {
@@ -886,6 +1071,18 @@ export default function ManageImagePage() {
   const uploadingCount = uploads.filter((u) => u.status === "uploading").length;
   const successCount = uploads.filter((u) => u.status === "success").length;
   const failedCount = uploads.filter((u) => u.status === "failed").length;
+  const uploadPreviewPageCount = Math.max(
+    1,
+    Math.ceil(uploads.length / UPLOAD_PREVIEW_PAGE_SIZE),
+  );
+  const currentUploadPreviewPage = Math.min(
+    uploadPreviewPage,
+    uploadPreviewPageCount,
+  );
+  const visibleUploads = uploads.slice(
+    (currentUploadPreviewPage - 1) * UPLOAD_PREVIEW_PAGE_SIZE,
+    currentUploadPreviewPage * UPLOAD_PREVIEW_PAGE_SIZE,
+  );
   const totalUploadSize = uploads.reduce((acc, cur) => acc + cur.file.size, 0);
   const progressPercent = uploads.length
     ? Math.round(((successCount + failedCount) / uploads.length) * 100)
@@ -1452,7 +1649,7 @@ export default function ManageImagePage() {
                         <div className="video-card-thumb">
                           <video
                             src={`/api/image/${image.id}`}
-                            preload="auto"
+                            preload="none"
                             muted
                             playsInline
                           />
@@ -1708,6 +1905,9 @@ export default function ManageImagePage() {
                 <h2>
                   {uploads.length} ảnh đã chọn ({formatSize(totalUploadSize)})
                 </h2>
+                <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#637078" }}>
+                  Hàng đợi được lưu trên trình duyệt để có thể khôi phục nếu tab tải lại.
+                </p>
               </div>
               <button
                 className="upload-modal-close"
@@ -1944,12 +2144,41 @@ export default function ManageImagePage() {
             </div>
 
             <div className="upload-preview-grid">
-              {uploads.map((item) => (
+              {uploadPreviewPageCount > 1 && (
+                <div className="pagination-container" aria-label="Phân trang hàng đợi upload">
+                  <span style={{ fontSize: "12px", color: "#637078" }}>
+                    Hiển thị {(currentUploadPreviewPage - 1) * UPLOAD_PREVIEW_PAGE_SIZE + 1} -{" "}
+                    {Math.min(currentUploadPreviewPage * UPLOAD_PREVIEW_PAGE_SIZE, uploads.length)} / {uploads.length} file
+                  </span>
+                  <div className="pagination-controls">
+                    <button
+                      type="button"
+                      className="pagination-btn"
+                      disabled={currentUploadPreviewPage === 1}
+                      onClick={() => setUploadPreviewPage(currentUploadPreviewPage - 1)}
+                    >
+                      ‹
+                    </button>
+                    <span className="pagination-btn is-active">
+                      {currentUploadPreviewPage} / {uploadPreviewPageCount}
+                    </span>
+                    <button
+                      type="button"
+                      className="pagination-btn"
+                      disabled={currentUploadPreviewPage === uploadPreviewPageCount}
+                      onClick={() => setUploadPreviewPage(currentUploadPreviewPage + 1)}
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
+              )}
+              {visibleUploads.map((item) => (
                 <div className="upload-card" key={item.id}>
                   <div className="upload-card-thumb">
                     {item.file.type.startsWith("video/") ? (
                       <div className="video-card-thumb">
-                        <video src={item.preview} muted preload="metadata" />
+                        <video src={item.preview} muted preload="none" />
                         <div
                           className="video-play-badge"
                           style={{ width: "26px", height: "26px", fontSize: "11px" }}
@@ -1958,7 +2187,7 @@ export default function ManageImagePage() {
                         </div>
                       </div>
                     ) : (
-                      <img src={item.preview} alt={item.file.name} />
+                      <img src={item.preview} alt={item.file.name} loading="lazy" decoding="async" />
                     )}
                     {item.status !== "uploading" && (
                       <button

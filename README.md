@@ -26,6 +26,7 @@ The upload queue offers two routes:
 
 - **Load trực tiếp** uploads each file to Telegram and saves the returned metadata to GitHub through the management API.
 - **Load qua server** uploads files to Telegram first, then sends batches of up to 20 metadata records through the management API to the separate metadata server and saves those records to the GitHub gallery metadata. The image files are not sent to the metadata-saving request. If metadata storage fails after Telegram accepts the upload, retrying the item resends its saved metadata without uploading the file to Telegram again.
+- The browser upload queue is saved locally in IndexedDB and restored after a page reload. If a reload interrupts an in-flight batch, those files are marked for review to avoid silently uploading them again; remaining pending files resume automatically when the same tab reloads. Queue previews are paginated and media loading is deferred to reduce memory use for large uploads. Upload batches are sent from a Web Worker so the queue does not rely on the page's main UI thread; browsers may still throttle background tabs and workers.
 
 The management API forwards `POST /api/images?operation=save-metadata` to `IMAGE_METADATA_API_URL` (default: `https://manage-image-be.onrender.com/upload`) as JSON. Configure `IMAGE_METADATA_API_URL` on the management server. The payload has this shape:
 
