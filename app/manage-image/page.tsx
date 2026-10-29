@@ -28,6 +28,33 @@ type UploadItem = {
   error?: string;
 };
 
+const MAX_UPLOAD_FILES_PER_BATCH = 10;
+const MAX_UPLOAD_BATCH_BYTES = 4.5 * 1024 * 1024 - 64 * 1024;
+
+function createUploadBatches(items: UploadItem[]) {
+  const batches: UploadItem[][] = [];
+  let batch: UploadItem[] = [];
+  let batchSize = 0;
+
+  for (const item of items) {
+    if (
+      batch.length > 0 &&
+      (batch.length >= MAX_UPLOAD_FILES_PER_BATCH ||
+        batchSize + item.file.size > MAX_UPLOAD_BATCH_BYTES)
+    ) {
+      batches.push(batch);
+      batch = [];
+      batchSize = 0;
+    }
+
+    batch.push(item);
+    batchSize += item.file.size;
+  }
+
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
 function formatSize(size: number) {
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
@@ -553,11 +580,10 @@ export default function ManageImagePage() {
     setIsStopRequested(false);
     setIsUploading(true);
 
-    const BATCH_SIZE = 10;
-    for (let i = 0; i < itemsToUpload.length; i += BATCH_SIZE) {
+    const batches = createUploadBatches(itemsToUpload);
+    for (const batch of batches) {
       if (stopUploadRef.current) break;
 
-      const batch = itemsToUpload.slice(i, i + BATCH_SIZE);
       const batchIds = new Set(batch.map((b) => b.id));
 
       setUploads((current) =>
@@ -583,7 +609,20 @@ export default function ManageImagePage() {
           method: "POST",
           body: form,
         });
-        const result = await response.json();
+        const responseText = await response.text();
+        let result: {
+          error?: string;
+          errors?: Array<{ filename: string; error: string }>;
+        };
+        try {
+          result = JSON.parse(responseText);
+        } catch {
+          throw new Error(
+            !response.ok && responseText.trim()
+              ? `Upload thất bại (${response.status}): ${responseText.trim()}`
+              : "Máy chủ không trả về JSON hợp lệ.",
+          );
+        }
 
         if (!response.ok) {
           const uploadError =

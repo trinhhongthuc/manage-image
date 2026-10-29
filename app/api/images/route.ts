@@ -174,7 +174,7 @@ export async function POST(request: Request) {
   const errors: Array<{ filename: string; error: string }> = [];
 
   for (let i = 0; i < files.length; i++) {
-    if (i > 0) await sleep(900);
+    if (i > 0) await sleep(100);
     const file = files[i];
 
     try {
