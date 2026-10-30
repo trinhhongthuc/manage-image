@@ -46345,5 +46345,60 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-10-29T14:14:40.041Z",
     "album": "Bi/SX"
+  },
+  {
+    "id": "img_d46fa307-036f-4f4d-b69c-4bb78350d29d",
+    "filename": "5653.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAZtVauPwglj6kzlh8SfOnsdNHihGaYcAAkgsAAL7lhhXU6OalhCglao9BA",
+    "telegramFileUniqueId": "AgADSCwAAvuWGFc",
+    "telegramMessageId": 105301,
+    "size": 151966,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-30T01:18:58.572Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_9dd62db4-afff-4db5-8fda-d8d4ae6a3a3d",
+    "filename": "5654.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAZtWauPwhAkHhcwUZsAcYX007xgwJj0AAkksAAL7lhhXj_6cdHQ1Jrg9BA",
+    "telegramFileUniqueId": "AgADSSwAAvuWGFc",
+    "telegramMessageId": 105302,
+    "size": 290546,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-30T01:19:00.947Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_98ac5d51-6c30-4ec9-9861-3c9881008cdd",
+    "filename": "5657.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAZtZauPwihalIYbQMuuyWPegib6e0-AAAkwsAAL7lhhXyWfyp2E-iWQ9BA",
+    "telegramFileUniqueId": "AgADTCwAAvuWGFc",
+    "telegramMessageId": 105305,
+    "size": 145783,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-30T01:19:07.171Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_69aab5c9-549a-45b8-ac29-858fb290a12d",
+    "filename": "5658.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAZtaauPwjOATLFBcvttP1z0H5zQaZsEAAk0sAAL7lhhXf_bDnyo7mwQ9BA",
+    "telegramFileUniqueId": "AgADTSwAAvuWGFc",
+    "telegramMessageId": 105306,
+    "size": 102293,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-30T01:19:08.967Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_5284b863-633c-49a6-a847-442a70e818ed",
+    "filename": "5661.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAZtdauPwkrAGtl6bzvGMpszNHivESEgAAlAsAAL7lhhXcGSm8j-LzxI9BA",
+    "telegramFileUniqueId": "AgADUCwAAvuWGFc",
+    "telegramMessageId": 105309,
+    "size": 129863,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-10-30T01:19:14.402Z",
+    "album": "Bi/SX"
   }
 ]
