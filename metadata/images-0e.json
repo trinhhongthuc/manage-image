@@ -49500,5 +49500,27 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-11-01T04:41:10.233Z",
     "album": "Bi/SX"
+  },
+  {
+    "id": "img_dc04809b-1454-41eb-8dfa-0ea45461ef4e",
+    "filename": "0659.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAbIFaubDA8UMcV7NdC0ZKbn9glDmI_UAAyIAApNhOFdgKnirEE3Kzj0E",
+    "telegramFileUniqueId": "AgAEIgACk2E4Vw",
+    "telegramMessageId": 111109,
+    "size": 179270,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-11-01T04:41:39.816Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_b2095d32-406f-4aef-ba6a-7a84868395ce",
+    "filename": "0650.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAbIKaubDC52KRWYF1lsBcFHrDRTLQ-sAAgUiAAKTYThXcD4tEFdUsZk9BA",
+    "telegramFileUniqueId": "AgADBSIAApNhOFc",
+    "telegramMessageId": 111114,
+    "size": 141380,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-11-01T04:41:48.198Z",
+    "album": "Bi/SX"
   }
 ]
