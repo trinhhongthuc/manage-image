@@ -104,7 +104,7 @@ async function uploadItems(album: string, items: UploadWorkerItem[]) {
       } catch {
         throw new Error(
           !response.ok && responseText.trim()
-            ? `Upload thất bại (${response.status}): ${responseText.trim()}`
+            ? `Upload thất bại (${response.status}): ${responseText.trim()}, errors`
             : "Máy chủ không trả về JSON hợp lệ.",
         );
       }
