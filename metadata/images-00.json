@@ -57501,5 +57501,38 @@
     "mimeType": "image/jpeg",
     "createdAt": "2026-11-08T05:32:42.774Z",
     "album": "Bi/SX"
+  },
+  {
+    "id": "img_7961e275-4c64-45e8-819f-193d00632df0",
+    "filename": "1121.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAeC1avAJqLc_fvlQXEsN428Z2ghIvrsAAvknAAL-EoBXJD2krqepcow9BA",
+    "telegramFileUniqueId": "AgAD-ScAAv4SgFc",
+    "telegramMessageId": 123061,
+    "size": 130392,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-11-08T05:33:30.613Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_f89780e7-fd8b-48d4-9902-dfa7e4923550",
+    "filename": "1098.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAeC5avAJrbP8kxc8GpWIWjJ60krNMGAAAv0nAAL-EoBXVjJWfxTV8vM9BA",
+    "telegramFileUniqueId": "AgAD_ScAAv4SgFc",
+    "telegramMessageId": 123065,
+    "size": 142089,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-11-08T05:33:35.290Z",
+    "album": "Bi/SX"
+  },
+  {
+    "id": "img_b0293166-96fb-48d0-9d00-b9aa98f15e80",
+    "filename": "1080.jpg",
+    "telegramFileId": "BQACAgUAAyEGAAMBBamymwABAeC8avAJsCpkLSwhMVQotagzFnnf1MEAAygAAv4SgFfKSblvTmCL4T0E",
+    "telegramFileUniqueId": "AgAEKAAC_hKAVw",
+    "telegramMessageId": 123068,
+    "size": 135632,
+    "mimeType": "image/jpeg",
+    "createdAt": "2026-11-08T05:33:38.685Z",
+    "album": "Bi/SX"
   }
 ]
